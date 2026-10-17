@@ -1,59 +1,804 @@
-🏀 Basketball Precision Pro
-Worldwide league directory · ESPN where connected · manual scenarios
-League and live games
-Country / professional league
-        USA — NBA
-        USA — WNBA
-        Spain — Liga ACB
-        China — CBA
-        Australia — NBL
-        New Zealand — NBL
-        Puerto Rico — BSN
-        Mexico — CIBAPAC
-        International — EuroLeague
-        International — EuroCup
-        Japan — B.League
-        South Korea — KBL
-        Brazil — NBB
-        Italy — Lega Basket Serie A
-        Germany — BBL
-        France — LNB Elite
-        Turkey — Basketbol Super Ligi
-        Greece — Greek Basket League
-        International — VTB United League
-      
-Loading NBA games…
-Refresh
-Connecting to ESPN through the application server…
-Auto-refresh every 30s
-Reset overrides
-Game state
-Away team name
-Home team name
-Away
-Home
-Game period
-          1st quarter2nd quarter
-          Halftime3rd quarter
-          4th quarterOvertime 1
-          Overtime 2Overtime 3
-          Final
-        
-Minutes left in period
-Seconds left in period
-Game time remaining24:00
-Regulation: 48 minutes. Manual clock changes are highlighted amber.
-Team statistics
-Metric
-Away
-Home
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#10192c">
+<link rel="manifest" href="/manifest.json">
+<title>Basketball Precision Pro</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#0a1020;color:#eef4ff;font:15px system-ui,-apple-system,sans-serif}
+header{padding:20px 15px;background:#111c31;border-bottom:1px solid #30405a}
+h1{font-size:23px;margin:0 0 5px}
+small,.muted{color:#a7b9d4}
+.wrap{max-width:920px;margin:auto;padding:12px}
+section{background:#152138;border:1px solid #2a3b58;border-radius:14px;padding:15px;margin:12px 0}
+h2{font-size:18px;margin:0 0 12px}
+button,select,input{background:#0b1427;color:white;border:1px solid #455877;border-radius:9px;padding:10px;font:inherit;min-width:0}
+button{background:#234c77;cursor:pointer}
+button.secondary{background:#26334b}
+button:disabled{opacity:.5}
+select{width:100%}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.bar>*{flex:1}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid label{font-size:13px}
+.grid input,.grid select{width:100%;margin-top:5px}
+.teams{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+.team{background:#0c172b;border-radius:10px;padding:12px;text-align:center;font-weight:bold}
+.statrow{display:grid;grid-template-columns:minmax(85px,1fr) 83px 83px;gap:7px;align-items:center;margin:8px 0}
+.statrow label{font-size:13px}
+.statrow input{width:100%;padding:8px;text-align:center}
+.override{background:#49371e;border-color:#e8b66d}
+.notice{background:#29354a;padding:12px;border-radius:9px;margin:12px 0;font-size:13px}
+.warn{color:#ffd18b}
+.good{color:#8be2b5}
+.metric{background:#0d182b;padding:12px;border-radius:10px;min-width:125px;flex:1}
+.metric strong{display:block;font-size:23px;margin-top:5px}
+footer{color:#a7b9d4;font-size:12px;padding:20px}
+@media(max-width:430px){
+.wrap{padding:9px}
+section{padding:12px}
+.statrow{grid-template-columns:minmax(80px,1fr) 76px 76px}
+}
+</style>
+</head>
+<body>
 
+<header>
+<h1>🏀 Basketball Precision Pro</h1>
+<small>Worldwide basketball · ESPN where connected · manual scenarios</small>
+</header>
 
-Market lines (optional)
-Home spread
-Full-game total
-Enter sportsbook lines manually. No odds feed is connected.
-Projection (experimental)
+<main class="wrap">
 
-Compare to feed baseline
-Experimental heuristic only; not trained or historically calibrated. Predictions are not guarantees. ESPN data is available only where configured and reachable. Other leagues require manual entry until an authorized feed is connected. Missing data is not zero, and directory inclusion does not imply live coverage.
+<section>
+<h2>League and live games</h2>
+<label for="league">Country / professional league</label>
+<select id="league">
+<option value="nba">USA — NBA</option>
+<option value="wnba">USA — WNBA</option>
+<option value="acb">Spain — Liga ACB</option>
+<option value="cba">China — CBA</option>
+<option value="nbl-au">Australia — NBL</option>
+<option value="nbl-nz">New Zealand — NBL</option>
+<option value="bsn">Puerto Rico — BSN</option>
+<option value="cibapac">Mexico — CIBAPAC</option>
+<option value="euroleague">International — EuroLeague</option>
+<option value="eurocup">International — EuroCup</option>
+<option value="b-league">Japan — B.League</option>
+<option value="kbl">South Korea — KBL</option>
+<option value="nbb">Brazil — NBB</option>
+<option value="lba">Italy — Lega Basket Serie A</option>
+<option value="bbl">Germany — BBL</option>
+<option value="lnb">France — LNB Elite</option>
+<option value="bsl">Turkey — Basketbol Super Ligi</option>
+<option value="gbl">Greece — Greek Basket League</option>
+<option value="vtb">International — VTB United League</option>
+</select>
+
+<div class="bar" style="margin-top:12px">
+<select id="games">
+<option value="">Loading games…</option>
+</select>
+<button id="refresh" type="button">Refresh</button>
+</div>
+
+<div id="status" class="notice" role="status">
+Connecting to the application server…
+</div>
+
+<div class="bar">
+<label><input type="checkbox" id="auto" checked> Auto-refresh every 30s</label>
+<button class="secondary" id="reset" type="button">Reset overrides</button>
+</div>
+</section>
+
+<section>
+<h2>Game state</h2>
+<div class="grid">
+<label>Away team name
+<input id="awayTeamInput" type="text" placeholder="Away team">
+</label>
+<label>Home team name
+<input id="homeTeamInput" type="text" placeholder="Home team">
+</label>
+</div>
+
+<div class="teams">
+<div class="team" id="awayName">Away</div>
+<div class="team" id="homeName">Home</div>
+</div>
+
+<div class="grid">
+<label>Game period
+<select id="period">
+<option value="1">1st quarter</option>
+<option value="2">2nd quarter</option>
+<option value="half">Halftime</option>
+<option value="3" selected>3rd quarter</option>
+<option value="4">4th quarter</option>
+<option value="5">Overtime 1</option>
+<option value="6">Overtime 2</option>
+<option value="7">Overtime 3</option>
+<option value="final">Final</option>
+</select>
+</label>
+
+<label>Minutes left in period
+<input id="periodMinutes" type="number" min="0" max="12" value="12">
+</label>
+
+<label>Seconds left in period
+<input id="periodSeconds" type="number" min="0" max="59" value="0">
+</label>
+
+<label>Game time remaining
+<input id="remainingDisplay" type="text" readonly>
+</label>
+</div>
+
+<input id="minutes" type="hidden" value="24">
+<input id="length" type="hidden" value="48">
+<p><small id="clockHint">NBA regulation: 48 minutes.</small></p>
+</section>
+
+<section>
+<h2>Team statistics</h2>
+<div class="statrow">
+<strong>Metric</strong>
+<strong id="awayHead">Away</strong>
+<strong id="homeHead">Home</strong>
+</div>
+<div id="fields"></div>
+<div id="validation" class="notice"></div>
+</section>
+
+<section>
+<h2>Market lines (optional)</h2>
+<div class="grid">
+<label>Home spread
+<input id="spread" type="number" step="0.5" placeholder="-4.5">
+</label>
+<label>Full-game total
+<input id="total" type="number" step="0.5" placeholder="Enter total">
+</label>
+</div>
+<p><small>Sportsbook lines must be entered manually.</small></p>
+</section>
+
+<section>
+<h2>Projection <small>(experimental)</small></h2>
+<div class="bar" id="results"></div>
+<div id="explain" class="notice"></div>
+<button class="secondary" id="compare" type="button">Compare to feed baseline</button>
+<div id="comparison" class="notice" hidden></div>
+</section>
+
+<footer>
+Experimental heuristic model. Predictions are not guarantees and have not been historically calibrated. NBA and WNBA use ESPN where available. International leagues currently require manual statistics entry. Missing values are not verified zeros.
+</footer>
+
+</main>
+
+<script>
+'use strict';
+
+const $ = id => document.getElementById(id);
+
+const keys = [
+['score','Score'],
+['fgm','FG made'],
+['fga','FG attempts'],
+['tpm','3PT made'],
+['tpa','3PT attempts'],
+['ftm','FT made'],
+['fta','FT attempts'],
+['oreb','Offensive rebounds'],
+['dreb','Defensive rebounds'],
+['reb','Total rebounds'],
+['to','Turnovers']
+];
+
+const supported = new Set(['nba','wnba']);
+const empty = () => ({away:{},home:{}});
+const number = v => v === '' || v == null ? null : Number(v);
+
+let base = empty();
+let overrides = empty();
+let names = {away:'Away',home:'Home'};
+let nameOverrides = {away:null,home:null};
+let lastId = '';
+let requestVersion = 0;
+
+function league(){
+return $('league').value;
+}
+
+function regulation(){
+return league() === 'nba' ? 48 : 40;
+}
+
+function quarter(){
+return regulation()/4;
+}
+
+function parsePair(value){
+if(typeof value !== 'string') return [null,null];
+const p = value.split('-').map(Number);
+return p.length === 2 && p.every(Number.isFinite) ? p : [null,null];
+}
+
+function extract(team){
+const s = team?.stats || {};
+const fg = parsePair(s.FG);
+const tp = parsePair(s['3PT'] || s['3P']);
+const ft = parsePair(s.FT);
+return {
+score:null,
+fgm:fg[0],
+fga:fg[1],
+tpm:tp[0],
+tpa:tp[1],
+ftm:ft[0],
+fta:ft[1],
+oreb:number(s.OREB ?? s.OR),
+dreb:number(s.DREB ?? s.DR),
+reb:number(s.REB ?? s.TREB),
+to:number(s.TO)
+};
+}
+
+function value(side,key,apply=true){
+if(apply && Object.prototype.hasOwnProperty.call(overrides[side],key)){
+return overrides[side][key];
+}
+return base[side][key] ?? null;
+}
+
+function render(){
+const host = $('fields');
+host.replaceChildren();
+
+for(const [key,label] of keys){
+const row = document.createElement('div');
+row.className = 'statrow';
+
+const title = document.createElement('label');
+title.textContent = label;
+row.append(title);
+
+for(const side of ['away','home']){
+const input = document.createElement('input');
+input.type = 'number';
+input.min = 0;
+input.step = 1;
+input.placeholder = '—';
+input.value = value(side,key) ?? '';
+input.setAttribute('aria-label',side+' '+label);
+input.classList.toggle(
+'override',
+Object.prototype.hasOwnProperty.call(overrides[side],key)
+);
+
+input.addEventListener('input',()=>{
+if(input.value === ''){
+delete overrides[side][key];
+}else{
+const n = Number(input.value);
+if(Number.isFinite(n)){
+overrides[side][key] = Math.max(0,n);
+}
+}
+input.classList.toggle(
+'override',
+Object.prototype.hasOwnProperty.call(overrides[side],key)
+);
+calculate();
+});
+
+row.append(input);
+}
+host.append(row);
+}
+
+for(const side of ['away','home']){
+const shown = nameOverrides[side] ?? names[side];
+$(side+'Name').textContent = shown;
+$(side+'Head').textContent = shown.split(' ').at(-1);
+const field = $(side+'TeamInput');
+if(document.activeElement !== field) field.value = shown;
+field.classList.toggle('override',nameOverrides[side]!==null);
+}
+calculate();
+}
+
+function updateClock(){
+const period = $('period').value;
+const q = quarter();
+const ot = ['5','6','7'].includes(period);
+const cap = ot ? 5 : q;
+$('periodMinutes').max = cap;
+
+const pm = Math.max(0,Math.min(cap,Number($('periodMinutes').value)||0));
+const ps = Math.max(0,Math.min(59,Number($('periodSeconds').value)||0));
+const left = Math.min(cap,pm+ps/60);
+
+let remaining = 0;
+let duration = regulation();
+
+if(period === 'half'){
+remaining = regulation()/2;
+}else if(period === 'final'){
+remaining = 0;
+}else if(Number(period) <= 4){
+remaining = (4-Number(period))*q+left;
+}else{
+const otNumber = Number(period)-4;
+duration = regulation()+otNumber*5;
+remaining = left;
+}
+
+$('minutes').value = remaining.toFixed(4);
+$('length').value = duration;
+
+const totalSeconds = Math.round(remaining*60);
+const mm = Math.floor(totalSeconds/60);
+const ss = totalSeconds%60;
+
+$('remainingDisplay').value =
+period === 'final' ? '0:00 (final)' :
+period === 'half' ? mm+':00 (halftime)' :
+mm+':'+String(ss).padStart(2,'0');
+
+$('clockHint').textContent =
+'Regulation: '+regulation()+' minutes · Quarter: '+q+' minutes.';
+}
+
+function setLiveClock(status){
+if($('period').dataset.edited) return;
+
+const state = String(
+status?.type?.description || status?.type?.name || ''
+).toLowerCase();
+
+const selected =
+status?.type?.completed || state.includes('final') ? 'final' :
+state.includes('halftime') ? 'half' :
+String(Math.max(1,Math.min(7,Number(status?.period)||1)));
+
+$('period').value = selected;
+
+const cap = Number(selected)>=5 ? 300 : quarter()*60;
+let seconds = cap;
+
+if(typeof status?.displayClock === 'string'){
+const parts = status.displayClock.split(':').map(Number);
+if(parts.length===2 && parts.every(Number.isFinite)){
+seconds = parts[0]*60+parts[1];
+}
+}
+
+if(selected==='half' || selected==='final') seconds=0;
+seconds=Math.max(0,Math.min(cap,seconds));
+
+$('periodMinutes').value=Math.floor(seconds/60);
+$('periodSeconds').value=seconds%60;
+updateClock();
+}
+
+function project(apply=true){
+const teams = {};
+
+for(const side of ['away','home']){
+teams[side]={};
+for(const [key] of keys){
+teams[side][key]=value(side,key,apply);
+}
+}
+
+const duration=Number($('length').value)||regulation();
+const remaining=Math.max(0,Number($('minutes').value)||0);
+const elapsed=Math.max(1,duration-remaining);
+const priorPace=league()==='nba'?99:79;
+const priorPPP=1.10;
+
+function compute(t){
+const usable=['fga','oreb','to','fta'].every(k=>t[k]!=null);
+
+const poss=usable
+?t.fga-t.oreb+t.to+0.44*t.fta
+:null;
+
+const observed=poss!=null && poss>0 && t.score!=null
+?t.score/poss
+:null;
+
+const measured=usable && poss>0
+?poss/elapsed*duration
+:priorPace;
+
+const pace=Math.max(
+priorPace*.6,
+Math.min(priorPace*1.5,measured)
+);
+
+const ppp=observed==null
+?priorPPP
+:priorPPP+(observed-priorPPP)*Math.min(.75,poss/(poss+35));
+
+return {
+poss,
+pace,
+ppp,
+score:t.score??0,
+missing:t.score==null
+};
+}
+
+const awayStats=compute(teams.away);
+const homeStats=compute(teams.home);
+
+const futurePoss=
+(awayStats.pace+homeStats.pace)/2*remaining/duration;
+
+const away=awayStats.score+futurePoss*awayStats.ppp;
+const home=homeStats.score+futurePoss*homeStats.ppp;
+const margin=home-away;
+
+const sd=Math.max(3,Math.sqrt(Math.max(0,futurePoss)*2.9));
+const probability=1/(1+Math.exp(-1.7*margin/sd));
+
+return {
+away,
+home,
+margin,
+total:away+home,
+probability,
+possAway:awayStats.poss,
+possHome:homeStats.poss,
+missing:awayStats.missing||homeStats.missing
+};
+}
+
+function calculate(){
+const warnings=[];
+
+for(const side of ['away','home']){
+const v=key=>value(side,key);
+
+if(v('fgm')!=null && v('fga')!=null && v('fgm')>v('fga')){
+warnings.push(side+': FG makes exceed attempts');
+}
+
+if(v('tpm')!=null && v('tpa')!=null && v('tpm')>v('tpa')){
+warnings.push(side+': 3PT makes exceed attempts');
+}
+
+if(v('ftm')!=null && v('fta')!=null && v('ftm')>v('fta')){
+warnings.push(side+': FT makes exceed attempts');
+}
+
+if(v('oreb')!=null && v('reb')!=null && v('oreb')>v('reb')){
+warnings.push(side+': offensive rebounds exceed total');
+}
+
+if(v('tpm')!=null && v('fgm')!=null && v('tpm')>v('fgm')){
+warnings.push(side+': 3PT makes exceed FG makes');
+}
+}
+
+$('validation').textContent=warnings.length
+?'⚠ '+warnings.join(' · ')
+:'✓ No basic input inconsistencies detected';
+
+$('validation').className='notice '+(warnings.length?'warn':'good');
+
+const p=project();
+$('results').replaceChildren();
+
+const metrics=[
+['Home win chance',Math.round(p.probability*100)+'%'],
+['Projected score',p.away.toFixed(1)+' – '+p.home.toFixed(1)],
+['Projected total',p.total.toFixed(1)],
+['Home margin',(p.margin>=0?'+':'')+p.margin.toFixed(1)],
+['Possessions (away / home)',
+(p.possAway?.toFixed(1)??'—')+' / '+
+(p.possHome?.toFixed(1)??'—')]
+];
+
+for(const [label,result] of metrics){
+const box=document.createElement('div');
+box.className='metric';
+
+const small=document.createElement('small');
+small.textContent=label;
+
+const strong=document.createElement('strong');
+strong.textContent=result;
+
+box.append(small,strong);
+$('results').append(box);
+}
+
+const spread=number($('spread').value);
+const total=number($('total').value);
+
+$('explain').textContent=
+(p.missing?'Missing score data: projection may be misleading. ':'')+
+(warnings.length?'Correct inconsistent statistics. ':'')+
+(spread!==null
+?'Home projected cover margin: '+(p.margin+spread).toFixed(1)+'. '
+:'')+
+(total!==null
+?'Total versus line: '+(p.total-total).toFixed(1)+'. '
+:'')+
+'Win probability is an uncalibrated heuristic, not a validated betting edge.';
+}
+
+async function api(url){
+const response=await fetch(url);
+const data=await response.json();
+
+if(!response.ok){
+throw Error(data.error||'Request failed');
+}
+return data;
+}
+
+function clearGame(){
+lastId='';
+base=empty();
+overrides=empty();
+
+names={away:'Away',home:'Home'};
+nameOverrides={away:null,home:null};
+
+$('period').dataset.edited='';
+$('period').value='3';
+$('periodMinutes').value=quarter();
+$('periodSeconds').value=0;
+$('comparison').hidden=true;
+
+for(const id of ['period','periodMinutes','periodSeconds']){
+$(id).classList.remove('override');
+}
+
+updateClock();
+render();
+}
+
+async function games(){
+const selected=league();
+const version=++requestVersion;
+
+if(!supported.has(selected)){
+$('games').replaceChildren(
+new Option('Manual entry — no connected feed','')
+);
+$('games').disabled=true;
+$('auto').checked=false;
+
+$('status').textContent=
+$('league').selectedOptions[0].textContent+
+': No live feed connected. Enter team names, game clock and statistics manually.';
+return;
+}
+
+$('games').disabled=false;
+
+try{
+const data=await api(
+'/api/games?league='+encodeURIComponent(selected)
+);
+
+if(version!==requestVersion || selected!==league()) return;
+
+$('games').replaceChildren(
+new Option('Select a '+selected.toUpperCase()+' game…','')
+);
+
+for(const game of data.events||[]){
+const option=new Option(
+game.name+' · '+(game.shortDetail||game.status||'Scheduled'),
+game.id
+);
+$('games').append(option);
+}
+
+$('status').textContent=
+selected.toUpperCase()+' schedule updated '+
+new Date(data.retrievedAt).toLocaleTimeString()+
+' · Select a game.';
+
+if(lastId && (data.events||[]).some(
+g=>String(g.id)===String(lastId)
+)){
+$('games').value=lastId;
+await load();
+}
+
+}catch(error){
+if(version!==requestVersion) return;
+
+$('games').replaceChildren(
+new Option('Feed unavailable — manual entry','')
+);
+
+$('status').textContent=
+'Connection failed: '+error.message+
+' · Manual entry is available.';
+}
+}
+
+async function load(){
+const id=$('games').value;
+const selected=league();
+const version=requestVersion;
+
+if(!id || !supported.has(selected)) return;
+
+try{
+const data=await api(
+'/api/game?league='+encodeURIComponent(selected)+
+'&id='+encodeURIComponent(id)
+);
+
+if(
+version!==requestVersion ||
+selected!==league() ||
+id!==$('games').value
+) return;
+
+if(lastId!==id){
+overrides=empty();
+nameOverrides={away:null,home:null};
+$('period').dataset.edited='';
+lastId=id;
+
+for(const field of ['period','periodMinutes','periodSeconds']){
+$(field).classList.remove('override');
+}
+}
+
+const teams=Array.isArray(data.teams)?data.teams:[];
+
+for(const competitor of data.competitors||[]){
+const side=competitor.homeAway;
+if(side!=='away' && side!=='home') continue;
+
+names[side]=competitor.name||side;
+
+const team=teams.find(
+t=>String(t.id)===String(competitor.id)
+);
+
+base[side]={
+...extract(team),
+score:number(competitor.score)
+};
+}
+
+setLiveClock(data.status);
+
+$('status').textContent=
+selected.toUpperCase()+' updated '+
+new Date(data.retrievedAt).toLocaleTimeString()+
+' · '+(data.status?.type?.description||'Game data');
+
+render();
+
+}catch(error){
+if(version===requestVersion){
+$('status').textContent=
+'Game update failed: '+error.message;
+}
+}
+}
+
+for(const side of ['away','home']){
+$(side+'TeamInput').addEventListener('input',event=>{
+nameOverrides[side]=event.target.value.trim()||null;
+
+const shown=nameOverrides[side]??names[side];
+$(side+'Name').textContent=shown;
+$(side+'Head').textContent=shown.split(' ').at(-1);
+
+event.target.classList.toggle(
+'override',
+nameOverrides[side]!==null
+);
+});
+}
+
+$('league').addEventListener('change',()=>{
+++requestVersion;
+clearGame();
+games();
+});
+
+$('games').addEventListener('change',load);
+
+$('refresh').addEventListener('click',async()=>{
+if($('games').value){
+await load();
+}else{
+await games();
+}
+});
+
+$('reset').addEventListener('click',()=>{
+overrides=empty();
+nameOverrides={away:null,home:null};
+$('period').dataset.edited='';
+
+for(const id of ['period','periodMinutes','periodSeconds']){
+$(id).classList.remove('override');
+}
+
+if($('games').value){
+load();
+}else{
+updateClock();
+render();
+}
+});
+
+for(const id of ['period','periodMinutes','periodSeconds']){
+$(id).addEventListener('input',()=>{
+$('period').dataset.edited='1';
+
+for(const field of ['period','periodMinutes','periodSeconds']){
+$(field).classList.add('override');
+}
+
+if(id==='period'){
+$('periodMinutes').value=
+['5','6','7'].includes($('period').value)?5:quarter();
+$('periodSeconds').value=0;
+}
+
+updateClock();
+calculate();
+});
+}
+
+for(const id of ['spread','total']){
+$(id).addEventListener('input',calculate);
+}
+
+$('compare').addEventListener('click',()=>{
+const baseline=project(false);
+const scenario=project(true);
+
+$('comparison').hidden=false;
+$('comparison').textContent=
+'Baseline total: '+baseline.total.toFixed(1)+
+' · Scenario total: '+scenario.total.toFixed(1)+
+' · Baseline home win: '+
+(baseline.probability*100).toFixed(0)+'%'+
+' · Scenario home win: '+
+(scenario.probability*100).toFixed(0)+'%. '+
+'Manual-league baselines may be incomplete.';
+});
+
+updateClock();
+
+setInterval(()=>{
+if(
+$('auto').checked &&
+$('games').value &&
+supported.has(league())
+){
+load();
+}
+},30000);
+
+render();
+games();
+
+</script>
+</body>
+</html>
