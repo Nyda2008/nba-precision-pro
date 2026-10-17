@@ -497,7 +497,31 @@ $('validation').textContent=warnings.length
 $('validation').className='notice '+(warnings.length?'warn':'good');
 
 const p=project();
-$('results').replaceChildren();
+$('results').replaceChildren();const required = ['score','fga','oreb','to','fta'];
+
+const hasEnoughData = ['away','home'].every(side =>
+  required.every(key => {
+    const v = value(side,key);
+    return v !== null && Number.isFinite(v) && v >= 0;
+  })
+);
+
+if (!hasEnoughData || warnings.length > 0) {
+  const message = document.createElement('div');
+  message.className = 'notice';
+  message.style.width = '100%';
+
+  message.textContent = warnings.length > 0
+    ? 'Insufficient reliable data: correct the inconsistent statistics.'
+    : 'Insufficient data: enter both teams scores, field-goal attempts, offensive rebounds, turnovers, and free-throw attempts.';
+
+  $('results').append(message);
+  $('explain').textContent =
+    'No win probability, projected score, or total will be displayed until sufficient valid statistics are available.';
+
+  $('comparison').hidden = true;
+  return;
+}
 
 const metrics=[
 ['Home win chance',Math.round(p.probability*100)+'%'],
