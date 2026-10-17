@@ -400,6 +400,85 @@ async function handler(req, res) {
   }
 }
 
+const LIVE_POLL_MS = 15000;
+const PREGAME_POLL_MS = 60000;
+const IDLE_POLL_MS = 300000;
+
+let collectorRunning = false;
+let collectorTimer = null;
+
+async function collectLiveGames() {
+  if (collectorRunning) return;
+
+  collectorRunning = true;
+  let nextInterval = IDLE_POLL_MS;
+
+  try {
+    let liveFound = false;
+    let upcomingFound = false;
+
+    for (const leagueId of ['nba', 'wnba']) {
+      cache.delete('games:' + leagueId);
+
+      const events = await loadGames(leagueId);
+
+      for (const event of events) {
+        const status = (event.status || '').toLowerCase();
+
+        if (
+          status.includes('progress') ||
+          status.includes('halftime') ||
+          status.includes('end of')
+        ) {
+          liveFound = true;
+        }
+
+        const tipoff = Date.parse(event.date);
+
+        if (
+          Number.isFinite(tipoff) &&
+          tipoff > Date.now() &&
+          tipoff - Date.now() < 1800000
+        ) {
+          upcomingFound = true;
+        }
+      }
+    }
+
+    if (liveFound) {
+      nextInterval = LIVE_POLL_MS;
+    } else if (upcomingFound) {
+      nextInterval = PREGAME_POLL_MS;
+    }
+
+    console.log(
+      'Game collector completed:',
+      new Date().toISOString(),
+      'next interval:',
+      nextInterval / 1000,
+      'seconds'
+    );
+  } catch (error) {
+    console.error('Collector error:', error.message);
+    nextInterval = PREGAME_POLL_MS;
+  } finally {
+    collectorRunning = false;
+
+    collectorTimer = setTimeout(
+      collectLiveGames,
+      nextInterval
+    );
+  }
+}
+
+
+function startCollector() {
+  console.log('Automatic game collector started');
+  collectLiveGames();
+}
+
+
+
 if (!process.env.DATABASE_URL) {
   console.error('Missing DATABASE_URL environment variable');
   process.exit(1);
@@ -413,6 +492,7 @@ initDB()
   .then(() => {
     http.createServer(handler).listen(PORT, () => {
       console.log('NBA Precision Pro listening on ' + PORT);
+      startCollector();
     });
   })
   .catch(error => {
