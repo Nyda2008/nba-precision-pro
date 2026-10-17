@@ -4,10 +4,17 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const { Pool } = require('pg');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball';
 const cache = new Map();
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 5,
+  connectionTimeoutMillis: 10000
+});
 
 const leagues = [
   { id: 'nba', name: 'NBA', country: 'USA', provider: 'espn' },
@@ -56,7 +63,9 @@ async function getJSON(key, url, ttl = 15000) {
       signal: controller.signal
     });
 
-    if (!response.ok) throw Error('Data provider returned ' + response.status);
+    if (!response.ok) {
+      throw new Error('Data provider returned ' + response.status);
+    }
 
     const data = await response.json();
     cache.set(key, { time: Date.now(), data });
@@ -69,12 +78,10 @@ async function getJSON(key, url, ttl = 15000) {
 function parseTotals(playerGroup) {
   const team = playerGroup.team || {};
   const statistics = playerGroup.statistics?.[0] || {};
-  const labels = statistics.labels || [];
-  const totals = statistics.totals || [];
   const stats = {};
 
-  labels.forEach((label, index) => {
-    stats[label] = totals[index];
+  (statistics.labels || []).forEach((label, index) => {
+    stats[label] = (statistics.totals || [])[index];
   });
 
   return {
@@ -103,6 +110,101 @@ function parseEvent(event, leagueId) {
   };
 }
 
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS games (
+      league TEXT NOT NULL,
+      game_id TEXT NOT NULL,
+      game_date TIMESTAMPTZ,
+      name TEXT,
+      status TEXT,
+      data JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (league, game_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS game_snapshots (
+      id BIGSERIAL PRIMARY KEY,
+      league TEXT NOT NULL,
+      game_id TEXT NOT NULL,
+      observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      data JSONB NOT NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS game_snapshots_lookup
+    ON game_snapshots (league, game_id, observed_at DESC)
+  `);
+
+  console.log('PostgreSQL connected; game tables ready');
+}
+
+async function storeGames(events) {
+  for (const event of events) {
+    if (!event.id) continue;
+
+    const values = [
+      event.league,
+      String(event.id),
+      event.date || null,
+      event.name || null,
+      event.status || null,
+      JSON.stringify(event)
+    ];
+
+    await pool.query(`
+      INSERT INTO games (
+        league, game_id, game_date, name, status, data
+      )
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+      ON CONFLICT (league, game_id) DO UPDATE SET
+        game_date = EXCLUDED.game_date,
+        name = EXCLUDED.name,
+        status = EXCLUDED.status,
+        data = EXCLUDED.data,
+        updated_at = NOW()
+    `, values);
+
+    await pool.query(`
+      INSERT INTO game_snapshots (league, game_id, data)
+      SELECT $1, $2, $3::jsonb
+      WHERE NOT EXISTS (
+        SELECT 1 FROM (
+          SELECT data
+          FROM game_snapshots
+          WHERE league = $1 AND game_id = $2
+          ORDER BY observed_at DESC, id DESC
+          LIMIT 1
+        ) latest
+        WHERE latest.data = $3::jsonb
+      )
+    `, [
+      event.league,
+      String(event.id),
+      JSON.stringify(event)
+    ]);
+  }
+}
+
+async function loadGames(leagueId) {
+  const url = ESPN + '/' + leagueId + '/scoreboard';
+  const data = await getJSON(
+    'games:' + leagueId,
+    url,
+    20000
+  );
+
+  const events = (data.events || []).map(e =>
+    parseEvent(e, leagueId)
+  );
+
+  await storeGames(events);
+  return events;
+}
+
 const root = path.resolve(__dirname, 'public');
 
 const mime = {
@@ -115,15 +217,18 @@ const mime = {
   '.ico': 'image/x-icon'
 };
 
-http.createServer(async (req, res) => {
+async function handler(req, res) {
   try {
     const u = new URL(req.url, 'http://localhost');
 
     if (u.pathname === '/api/health') {
+      await pool.query('SELECT 1');
+
       return send(res, 200, {
         ok: true,
         service: 'NBA Precision Pro',
-        version: 'multi-league-1'
+        database: 'connected',
+        version: 'db-1'
       });
     }
 
@@ -139,17 +244,7 @@ http.createServer(async (req, res) => {
     if (u.pathname === '/api/games/all') {
       const active = leagues.filter(l => l.provider);
       const results = await Promise.allSettled(
-        active.map(async l => {
-          const data = await getJSON(
-            'games:' + l.id,
-            ESPN + '/' + l.id + '/scoreboard',
-            20000
-          );
-          return {
-            league: l.id,
-            events: (data.events || []).map(e => parseEvent(e, l.id))
-          };
-        })
+        active.map(l => loadGames(l.id))
       );
 
       const events = [];
@@ -157,7 +252,7 @@ http.createServer(async (req, res) => {
 
       results.forEach((result, index) => {
         if (result.status === 'fulfilled') {
-          events.push(...result.value.events);
+          events.push(...result.value);
         } else {
           errors.push({
             league: active[index].id,
@@ -179,7 +274,9 @@ http.createServer(async (req, res) => {
       const league = leagues.find(l => l.id === leagueId);
 
       if (!league) {
-        return send(res, 400, { error: 'Unknown league' });
+        return send(res, 400, {
+          error: 'Unknown league'
+        });
       }
 
       if (!league.provider) {
@@ -188,17 +285,13 @@ http.createServer(async (req, res) => {
         });
       }
 
-      const data = await getJSON(
-        'games:' + league.id,
-        ESPN + '/' + league.id + '/scoreboard',
-        20000
-      );
+      const events = await loadGames(league.id);
 
       return send(res, 200, {
         source: 'ESPN',
         league: league.id,
         retrievedAt: new Date().toISOString(),
-        events: (data.events || []).map(e => parseEvent(e, league.id))
+        events
       });
     }
 
@@ -207,7 +300,9 @@ http.createServer(async (req, res) => {
       const league = leagues.find(l => l.id === leagueId);
 
       if (!league) {
-        return send(res, 400, { error: 'Unknown league' });
+        return send(res, 400, {
+          error: 'Unknown league'
+        });
       }
 
       if (!league.provider) {
@@ -219,7 +314,9 @@ http.createServer(async (req, res) => {
       const id = u.searchParams.get('id');
 
       if (!/^\d{5,15}$/.test(id || '')) {
-        return send(res, 400, { error: 'Invalid game ID' });
+        return send(res, 400, {
+          error: 'Invalid game ID'
+        });
       }
 
       const data = await getJSON(
@@ -247,6 +344,19 @@ http.createServer(async (req, res) => {
       });
     }
 
+    if (u.pathname === '/api/db/stats') {
+      const result = await pool.query(`
+        SELECT
+          (SELECT COUNT(*)::int FROM games) AS games,
+          (SELECT COUNT(*)::int FROM game_snapshots) AS snapshots
+      `);
+
+      return send(res, 200, {
+        database: 'connected',
+        ...result.rows[0]
+      });
+    }
+
     let relative;
 
     try {
@@ -254,13 +364,17 @@ http.createServer(async (req, res) => {
         u.pathname === '/' ? 'index.html' : u.pathname.slice(1)
       );
     } catch {
-      return send(res, 400, { error: 'Invalid path' });
+      return send(res, 400, {
+        error: 'Invalid path'
+      });
     }
 
     const full = path.resolve(root, relative);
 
     if (!full.startsWith(root + path.sep)) {
-      return send(res, 403, { error: 'Forbidden' });
+      return send(res, 403, {
+        error: 'Forbidden'
+      });
     }
 
     fs.readFile(full, (error, body) => {
@@ -270,17 +384,38 @@ http.createServer(async (req, res) => {
       }
 
       res.writeHead(200, {
-        'Content-Type': mime[path.extname(full)] || 'application/octet-stream',
+        'Content-Type': mime[path.extname(full)] ||
+          'application/octet-stream',
         'X-Content-Type-Options': 'nosniff'
       });
 
       res.end(body);
     });
   } catch (error) {
+    console.error('Request failed:', error.message);
+
     send(res, 502, {
-      error: 'Live data unavailable: ' + error.message
+      error: 'Request failed; check service logs'
     });
   }
-}).listen(PORT, () => {
-  console.log('NBA Precision Pro listening on ' + PORT);
+}
+
+if (!process.env.DATABASE_URL) {
+  console.error('Missing DATABASE_URL environment variable');
+  process.exit(1);
+}
+
+pool.on('error', error => {
+  console.error('PostgreSQL pool error:', error.message);
 });
+
+initDB()
+  .then(() => {
+    http.createServer(handler).listen(PORT, () => {
+      console.log('NBA Precision Pro listening on ' + PORT);
+    });
+  })
+  .catch(error => {
+    console.error('Database startup failed:', error.message);
+    process.exit(1);
+  });
