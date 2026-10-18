@@ -421,6 +421,35 @@ async function handler(req, res) {
         records: history.length,
         history
       });
+    } 
+    
+    if (u.pathname === '/api/games/history') {
+      const league = u.searchParams.get('league') || 'nba';
+
+      if (!['nba', 'wnba'].includes(league)) {
+        return send(res, 400, {
+          error: 'Unsupported league'
+        });
+      }
+
+      const result = await pool.query(`
+        SELECT
+          game_id,
+          game_date,
+          name,
+          status,
+          data
+        FROM games
+        WHERE league = $1
+        ORDER BY game_date DESC NULLS LAST
+        LIMIT 50
+      `, [league]);
+
+      return send(res, 200, {
+        league,
+        count: result.rows.length,
+        games: result.rows
+      });
     }
     if (u.pathname === '/api/db/stats') {
       const result = await pool.query(`
