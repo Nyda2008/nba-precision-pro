@@ -484,6 +484,49 @@ const IDLE_POLL_MS = 300000;
 
 let collectorRunning = false;
 let collectorTimer = null;
+async function collectGameAnalytics(event) {
+  const gameId = String(event.id || '');
+  const leagueId = event.league;
+
+  if (!/^\d{5,15}$/.test(gameId)) return;
+
+  try {
+    const data = await getJSON(
+      'game:' + leagueId + ':' + gameId,
+      ESPN + '/' + leagueId + '/summary?event=' + gameId,
+      12000
+    );
+
+    const teams = (data.boxscore?.players || [])
+      .map(parseTotals);
+
+    if (!teams.length) return;
+
+    const analysis = analyzeGame({
+      league: leagueId,
+      teams
+    });
+
+    if (!analysis.teams.some(team => team.available)) {
+      return;
+    }
+
+    await analyticsStore.save(gameId, analysis);
+
+    console.log(
+      'Live analytics saved:',
+      leagueId,
+      gameId
+    );
+  } catch (error) {
+    console.error(
+      'Analytics collection failed:',
+      leagueId,
+      gameId,
+      error.message
+    );
+  }
+}
 
 async function collectLiveGames() {
   if (collectorRunning) return;
@@ -509,6 +552,7 @@ async function collectLiveGames() {
           status.includes('end of')
         ) {
           liveFound = true;
+          await collectGameAnalytics(event);
         }
 
         const tipoff = Date.parse(event.date);
