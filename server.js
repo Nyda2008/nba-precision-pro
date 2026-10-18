@@ -349,7 +349,49 @@ async function handler(req, res) {
         notes: 'Unavailable statistics are not estimated or filled in.'
       });
     }
+    
+    if (u.pathname === '/api/game/quarters') {
+      const league = u.searchParams.get('league') || 'nba';
+      const id = u.searchParams.get('id');
 
+      if (!['nba', 'wnba'].includes(league)) {
+        return send(res, 400, {
+          error: 'Unsupported league'
+        });
+      }
+
+      if (!/^\d{5,15}$/.test(id || '')) {
+        return send(res, 400, {
+          error: 'Invalid game ID'
+        });
+      }
+
+      const data = await getJSON(
+        'game:' + league + ':' + id,
+        ESPN + '/' + league + '/summary?event=' + id,
+        12000
+      );
+
+      const competition = data.header?.competitions?.[0];
+
+      const teams = (competition?.competitors || []).map(c => ({
+        team: c.team?.displayName,
+        homeAway: c.homeAway,
+        totalScore: c.score,
+        quarters: (c.linescores || []).map((q, index) => ({
+          period: q.period || index + 1,
+          points: Number(q.value)
+        }))
+      }));
+
+      return send(res, 200, {
+        source: 'ESPN',
+        league,
+        gameId: id,
+        status: competition?.status?.type?.description || null,
+        teams
+      });
+    }
     if (u.pathname === '/api/analyze') {
       const leagueId = u.searchParams.get('league') || 'nba';
       const league = leagues.find(l => l.id === leagueId);
