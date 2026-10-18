@@ -847,6 +847,34 @@ async function handler(req, res) {
         ...report
       });
     }
+    
+    if (u.pathname === '/api/backtest/summary') {
+      const league = u.searchParams.get('league') || 'nba';
+
+      if (!['nba', 'wnba'].includes(league)) {
+        return send(res, 400, {
+          error: 'Unsupported league'
+        });
+      }
+
+      const result = await pool.query(`
+        SELECT
+          COUNT(*)::int AS completed_games,
+          MIN(game_date) AS earliest_game,
+          MAX(game_date) AS latest_game
+        FROM games
+        WHERE league = $1
+          AND status = 'Final'
+      `, [league]);
+
+      return send(res, 200, {
+        source: 'PostgreSQL',
+        league,
+        ...result.rows[0],
+        note: 'Combined prediction metrics not calculated yet'
+      });
+    }
+
 
     if (u.pathname === '/api/db/stats') {
       const result = await pool.query(`
