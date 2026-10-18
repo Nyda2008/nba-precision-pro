@@ -504,6 +504,7 @@ async function handler(req, res) {
     }
 
 
+      
     if (u.pathname === '/api/analytics/history') {
       const league = u.searchParams.get('league') || 'nba';
       const id = u.searchParams.get('id');
@@ -531,8 +532,100 @@ async function handler(req, res) {
         records: history.length,
         history
       });
-    } 
-    
+    }
+
+ 
+    if (u.pathname === '/api/games/import-range') {
+      const league = u.searchParams.get('league') || 'nba';
+      const startDate = u.searchParams.get('start');
+      const days = Number(u.searchParams.get('days') || 1);
+
+      if (!['nba', 'wnba'].includes(league)) {
+        return send(res, 400, {
+          error: 'Unsupported league'
+        });
+      }
+
+      if (
+        !startDate ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(startDate) ||
+        !Number.isFinite(Date.parse(startDate)) ||
+        new Date(startDate).toISOString().slice(0, 10) !== startDate
+      ) {
+        return send(res, 400, {
+          error: 'Invalid start date; use YYYY-MM-DD'
+        });
+      }
+
+      if (!Number.isInteger(days) || days < 1 || days > 3) {
+        return send(res, 400, {
+          error: 'Days must be between 1 and 3'
+        });
+      }
+
+      
+      const batches = [];
+      let totalImported = 0;
+
+      for (let i = 0; i < days; i++) {
+        const currentDate = new Date(
+          Date.parse(startDate) + i * 86400000
+        ).toISOString().slice(0, 10);
+
+        const espnDate = currentDate.replace(/-/g, '');
+
+        try {
+          const data = await getJSON(
+            'historical:' + league + ':' + espnDate,
+            ESPN + '/' + league +
+              '/scoreboard?dates=' + espnDate,
+            60000
+          );
+
+          const events = (data.events || []).map(event =>
+            parseEvent(event, league)
+          );
+
+          const completed = events.filter(
+            event => event.status === 'Final'
+          );
+
+          await storeGames(completed);
+
+          totalImported += completed.length;
+
+          batches.push({
+            date: currentDate,
+            imported: completed.length,
+            status: 'success'
+          });
+        } catch (error) {
+          console.error(
+            'Historical import failed:',
+            currentDate,
+            error.message
+          );
+
+          batches.push({
+            date: currentDate,
+            imported: 0,
+            status: 'failed'
+          });
+        }
+      }
+
+      return send(res, 200, {
+        source: 'ESPN',
+        league,
+        startDate,
+        daysRequested: days,
+        totalImported,
+        batches
+      });
+
+    }
+
+
     if (u.pathname === '/api/games/import-date') {
       const league = u.searchParams.get('league') || 'nba';
       const date = u.searchParams.get('date');
