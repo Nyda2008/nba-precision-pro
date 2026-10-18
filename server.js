@@ -9,6 +9,7 @@ const { Pool } = require('pg');
 const { analyzeGame } = require('./stats-engine');
 const { createAnalyticsStore } = require('./analytics-store');
 const { analyzePeriods } = require('./halftime-engine');
+const { backtestGames } = require('./backtest-engine');
 
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -628,6 +629,101 @@ async function handler(req, res) {
         games: result.rows
       });
     }
+    
+    if (u.pathname === '/api/backtest') {
+      const league = u.searchParams.get('league') || 'nba';
+
+      if (!['nba', 'wnba'].includes(league)) {
+        return send(res, 400, {
+          error: 'Unsupported league'
+        });
+      }
+
+      const result = await pool.query(`
+        SELECT game_id
+        FROM games
+        WHERE league = $1
+          AND status = 'Final'
+        ORDER BY game_date DESC
+        LIMIT 10
+      `, [league]);
+
+      const games = [];
+      const skipped = [];
+
+      for (const row of result.rows) {
+        const id = row.game_id;
+
+        try {
+          const data = await getJSON(
+            'game:' + league + ':' + id,
+            ESPN + '/' + league + '/summary?event=' + id,
+            60000
+          );
+
+          const competition = data.header?.competitions?.[0];
+
+          if (!competition?.status?.type?.completed) {
+            skipped.push(id);
+            continue;
+          }
+
+          const teams = (competition.competitors || []).map(c => ({
+            team: c.team?.displayName,
+            homeAway: c.homeAway,
+            totalScore: c.score,
+            quarters: (c.linescores || []).map((q, index) => {
+              const raw = q.value ?? q.displayValue ?? null;
+              const points = raw === null || raw === ''
+                ? null
+                : Number(raw);
+
+              return {
+                period: q.period || index + 1,
+                points: Number.isFinite(points) ? points : null
+              };
+            })
+          }));
+
+          if (teams.length !== 2) {
+            skipped.push(id);
+            continue;
+          }
+
+          
+          const analysis = analyzePeriods(teams);
+
+          if (
+            analysis.firstHalf.combinedPoints === null ||
+            analysis.secondHalf.combinedPoints === null
+          ) {
+            skipped.push(id);
+            continue;
+          }
+
+          games.push({
+
+            gameId: id,
+            firstHalfTotal: analysis.firstHalf.combinedPoints,
+            secondHalfTotal: analysis.secondHalf.combinedPoints
+          });
+        } catch (error) {
+          console.error('Backtest game failed:', id, error.message);
+          skipped.push(id);
+        }
+      }
+
+      const report = backtestGames(games);
+
+      return send(res, 200, {
+        source: 'ESPN',
+        league,
+        gamesSelected: result.rows.length,
+        skipped,
+        ...report
+      });
+    }
+
     if (u.pathname === '/api/db/stats') {
       const result = await pool.query(`
         SELECT
