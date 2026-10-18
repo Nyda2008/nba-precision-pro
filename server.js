@@ -8,6 +8,7 @@ const path = require('node:path');
 const { Pool } = require('pg');
 const { analyzeGame } = require('./stats-engine');
 const { createAnalyticsStore } = require('./analytics-store');
+const { analyzePeriods } = require('./halftime-engine');
 
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -398,6 +399,64 @@ async function handler(req, res) {
         gameId: id,
         status: competition?.status?.type?.description || null,
         teams
+      });
+    }
+    
+    if (u.pathname === '/api/game/halftime') {
+      const league = u.searchParams.get('league') || 'nba';
+      const id = u.searchParams.get('id');
+
+      if (!['nba', 'wnba'].includes(league)) {
+        return send(res, 400, {
+          error: 'Unsupported league'
+        });
+      }
+
+      if (!/^\d{5,15}$/.test(id || '')) {
+        return send(res, 400, {
+          error: 'Invalid game ID'
+        });
+      }
+
+      const data = await getJSON(
+        'game:' + league + ':' + id,
+        ESPN + '/' + league + '/summary?event=' + id,
+        12000
+      );
+
+      const competition = data.header?.competitions?.[0];
+
+      const teams = (competition?.competitors || []).map(c => ({
+        team: c.team?.displayName,
+        homeAway: c.homeAway,
+        totalScore: c.score,
+        quarters: (c.linescores || []).map((q, index) => {
+          const raw = q.value ?? q.displayValue ?? null;
+          const value = raw === null || raw === ''
+            ? null
+            : Number(raw);
+
+          return {
+            period: q.period || index + 1,
+            points: Number.isFinite(value) ? value : null
+          };
+        })
+      }));
+
+      if (teams.length !== 2) {
+        return send(res, 422, {
+          error: 'Two teams are required for halftime analysis'
+        });
+      }
+
+      const analysis = analyzePeriods(teams);
+
+      return send(res, 200, {
+        source: 'ESPN',
+        league,
+        gameId: id,
+        status: competition?.status?.type?.description || null,
+        ...analysis
       });
     }
     if (u.pathname === '/api/analyze') {
