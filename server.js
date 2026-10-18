@@ -394,6 +394,34 @@ async function handler(req, res) {
     }
 
 
+    if (u.pathname === '/api/analytics/history') {
+      const league = u.searchParams.get('league') || 'nba';
+      const id = u.searchParams.get('id');
+
+      if (!['nba', 'wnba'].includes(league)) {
+        return send(res, 400, {
+          error: 'Unsupported league'
+        });
+      }
+
+      if (!/^\d{5,15}$/.test(id || '')) {
+        return send(res, 400, {
+          error: 'Invalid game ID'
+        });
+      }
+
+      const history = await analyticsStore.getGameHistory(
+        league,
+        id
+      );
+
+      return send(res, 200, {
+        league,
+        gameId: id,
+        records: history.length,
+        history
+      });
+    }
     if (u.pathname === '/api/db/stats') {
       const result = await pool.query(`
         SELECT
