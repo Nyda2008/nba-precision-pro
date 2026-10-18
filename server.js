@@ -423,6 +423,49 @@ async function handler(req, res) {
       });
     } 
     
+    if (u.pathname === '/api/games/import-date') {
+      const league = u.searchParams.get('league') || 'nba';
+      const date = u.searchParams.get('date');
+
+      if (!['nba', 'wnba'].includes(league)) {
+        return send(res, 400, {
+          error: 'Unsupported league'
+        });
+      }
+
+      if (
+        !date ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        !Number.isFinite(Date.parse(date)) ||
+        new Date(date).toISOString().slice(0, 10) !== date
+      ) {
+        return send(res, 400, {
+          error: 'Invalid date; use YYYY-MM-DD'
+        });
+      }
+
+      const espnDate = date.replace(/-/g, '');
+
+      const data = await getJSON(
+        'historical:' + league + ':' + espnDate,
+        ESPN + '/' + league + '/scoreboard?dates=' + espnDate,
+        60000
+      );
+
+      const events = (data.events || []).map(event =>
+        parseEvent(event, league)
+      );
+
+      await storeGames(events);
+
+      return send(res, 200, {
+        source: 'ESPN',
+        league,
+        date,
+        imported: events.length,
+        events
+      });
+    }
     if (u.pathname === '/api/games/history') {
       const league = u.searchParams.get('league') || 'nba';
 
