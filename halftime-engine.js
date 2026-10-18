@@ -19,15 +19,23 @@ function analyzePeriods(teams) {
 
       return Number(q.points);
     });
-
+    
     return {
       name: team.team,
+      homeAway: team.homeAway,
       totalScore: Number(team.totalScore),
       quarters
     };
-  });
 
-  const [away, home] = parsed;
+  });
+ 
+  const away = parsed.find(team => team.homeAway === 'away');
+  const home = parsed.find(team => team.homeAway === 'home');
+
+  if (!away || !home) {
+    throw new Error('Home and away teams are required');
+  }
+
 
   const valid = index =>
     Number.isFinite(away.quarters[index]) &&
@@ -55,7 +63,9 @@ function analyzePeriods(teams) {
       ],
       combinedPoints: a + h,
       margin: h - a,
+      marginPerspective: home.name,
       winner: a === h
+
         ? 'Tied'
         : a > h ? away.name : home.name
     });
