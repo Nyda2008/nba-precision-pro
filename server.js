@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const { Pool } = require('pg');
 const { analyzeGame } = require('./stats-engine');
+const { createAnalyticsStore } = require('./analytics-store');
 
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -18,6 +19,7 @@ const pool = new Pool({
   max: 5,
   connectionTimeoutMillis: 10000
 });
+const analyticsStore = createAnalyticsStore(pool);
 
 const leagues = [
   { id: 'nba', name: 'NBA', country: 'USA', provider: 'espn' },
@@ -142,6 +144,7 @@ async function initDB() {
     ON game_snapshots (league, game_id, observed_at DESC)
   `);
 
+  await analyticsStore.init();
   console.log('PostgreSQL connected; game tables ready');
 }
 
@@ -379,6 +382,8 @@ async function handler(req, res) {
         league: league.id,
         teams
       });
+      
+      await analyticsStore.save(id, analysis);
 
       return send(res, 200, {
         source: 'ESPN',
