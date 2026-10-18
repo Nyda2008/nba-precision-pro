@@ -432,6 +432,26 @@ async function handler(req, res) {
         });
       }
 
+      
+      const date = u.searchParams.get('date');
+
+      if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return send(res, 400, {
+          error: 'Date must use YYYY-MM-DD'
+        });
+      }
+
+      
+      if (date && (
+        !Number.isFinite(Date.parse(date)) ||
+        new Date(date).toISOString().slice(0, 10) !== date
+      )) {
+        return send(res, 400, {
+          error: 'Invalid date'
+        });
+      }
+
+
       const result = await pool.query(`
         SELECT
           game_id,
@@ -441,9 +461,14 @@ async function handler(req, res) {
           data
         FROM games
         WHERE league = $1
+          AND (
+            $2::date IS NULL
+            OR (game_date AT TIME ZONE 'America/New_York')::date = $2::date
+          )
         ORDER BY game_date DESC NULLS LAST
         LIMIT 50
-      `, [league]);
+      `, [league, date || null]);
+
 
       return send(res, 200, {
         league,
