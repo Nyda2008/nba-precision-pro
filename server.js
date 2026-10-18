@@ -638,15 +638,46 @@ async function handler(req, res) {
           error: 'Unsupported league'
         });
       }
+     
+      const requestedLimit = Number(
+        u.searchParams.get('limit') || 10
+      );
 
+      if (
+        !Number.isInteger(requestedLimit) ||
+        requestedLimit < 1 ||
+        requestedLimit > 10
+      ) {
+        return send(res, 400, {
+          error: 'Limit must be between 1 and 10'
+        });
+      } 
+      
+      const requestedOffset = Number(
+        u.searchParams.get('offset') || 0
+      );
+
+      if (
+        !Number.isInteger(requestedOffset) ||
+        requestedOffset < 0 ||
+        requestedOffset > 10000
+      ) {
+        return send(res, 400, {
+          error: 'Offset must be between 0 and 10000'
+        });
+      }
+      
       const result = await pool.query(`
         SELECT game_id
         FROM games
         WHERE league = $1
           AND status = 'Final'
-        ORDER BY game_date DESC
-        LIMIT 10
-      `, [league]);
+        ORDER BY game_date DESC, game_id DESC
+        LIMIT $2
+        OFFSET $3
+      `, [league, requestedLimit, requestedOffset]);
+
+
 
       const games = [];
       const skipped = [];
