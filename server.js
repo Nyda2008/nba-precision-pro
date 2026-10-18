@@ -4,7 +4,10 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+
 const { Pool } = require('pg');
+const { analyzeGame } = require('./stats-engine');
+
 
 const PORT = Number(process.env.PORT) || 3000;
 const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball';
@@ -343,6 +346,48 @@ async function handler(req, res) {
         notes: 'Unavailable statistics are not estimated or filled in.'
       });
     }
+
+    if (u.pathname === '/api/analyze') {
+      const leagueId = u.searchParams.get('league') || 'nba';
+      const league = leagues.find(l => l.id === leagueId);
+
+      if (!league) {
+        return send(res, 400, { error: 'Unknown league' });
+      }
+
+      if (!league.provider) {
+        return send(res, 503, {
+          error: 'No data provider configured for this league'
+        });
+      }
+
+      const id = u.searchParams.get('id');
+
+      if (!/^\d{5,15}$/.test(id || '')) {
+        return send(res, 400, { error: 'Invalid game ID' });
+      }
+
+      const data = await getJSON(
+        'game:' + league.id + ':' + id,
+        ESPN + '/' + league.id + '/summary?event=' + id,
+        12000
+      );
+
+      const teams = (data.boxscore?.players || []).map(parseTotals);
+
+      const analysis = analyzeGame({
+        league: league.id,
+        teams
+      });
+
+      return send(res, 200, {
+        source: 'ESPN',
+        gameId: id,
+        gameStatus: data.header?.competitions?.[0]?.status?.type?.description || null,
+        ...analysis
+      });
+    }
+
 
     if (u.pathname === '/api/db/stats') {
       const result = await pool.query(`
