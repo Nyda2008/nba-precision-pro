@@ -378,10 +378,18 @@ async function handler(req, res) {
         team: c.team?.displayName,
         homeAway: c.homeAway,
         totalScore: c.score,
-        quarters: (c.linescores || []).map((q, index) => ({
-          period: q.period || index + 1,
-          points: Number(q.value)
-        }))
+        
+        quarters: (c.linescores || []).map((q, index) => {
+          const rawPoints = q.value ?? q.displayValue ?? null;
+          const points = rawPoints === null || rawPoints === ''
+            ? null
+            : Number(rawPoints);
+
+          return {
+            period: q.period || index + 1,
+            points: Number.isFinite(points) ? points : null
+          };
+        })
       }));
 
       return send(res, 200, {
