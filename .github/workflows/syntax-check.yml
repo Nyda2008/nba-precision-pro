@@ -65,5 +65,6 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      
       - name: Run PostgreSQL integration test
-        run: node --test tests/backtest-store.test.js
+        run: node --test backtest-store.test.js
