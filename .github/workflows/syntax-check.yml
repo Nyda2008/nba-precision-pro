@@ -36,6 +36,9 @@ jobs:
       - name: Run backtesting engine tests
         run: node --test backtest-engine.test.js
 
+      - name: Run prediction engine tests
+        run: node --test prediction-engine.test.js
+
   database-test:
     runs-on: ubuntu-latest
 
