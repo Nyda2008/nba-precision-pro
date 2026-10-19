@@ -39,6 +39,9 @@ jobs:
       - name: Run prediction engine tests
         run: node --test prediction-engine.test.js
 
+      - name: Run halftime collector tests
+        run: node --test halftime-collector.test.js
+
   database-test:
     runs-on: ubuntu-latest
 
