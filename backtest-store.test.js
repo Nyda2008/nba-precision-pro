@@ -6,8 +6,7 @@ const assert = require('node:assert/strict');
 const { Pool } = require('pg');
 const { createBacktestStore } = require('./backtest-store');
 
-
-test('PostgreSQL backtest storage and accuracy', async () => {
+test('PostgreSQL backtest storage, dates and accuracy', async () => {
   if (
     process.env.CI_TEST_DATABASE !== 'true' ||
     !process.env.DATABASE_URL
@@ -48,6 +47,7 @@ test('PostgreSQL backtest storage and accuracy', async () => {
       results: [
         {
           gameId: '401900001',
+          gameDate: '2026-10-01T23:00:00.000Z',
           firstHalfTotal: 110,
           predictedSecondHalf: 110,
           actualSecondHalf: 106,
@@ -58,6 +58,7 @@ test('PostgreSQL backtest storage and accuracy', async () => {
         },
         {
           gameId: '401900002',
+          gameDate: '2026-10-02T23:00:00.000Z',
           firstHalfTotal: 100,
           predictedSecondHalf: 100,
           actualSecondHalf: 106,
@@ -74,6 +75,43 @@ test('PostgreSQL backtest storage and accuracy', async () => {
 
     const duplicate = await store.saveReport('nba', report);
     assert.equal(duplicate.processedGames, 0);
+
+    const savedGames = await pool.query(`
+      SELECT
+        game_id,
+        game_date,
+        model_version
+      FROM backtest_results
+      WHERE league = $1
+      ORDER BY game_id ASC
+    `, ['nba']);
+
+    assert.equal(savedGames.rows.length, 2);
+
+    assert.equal(
+      savedGames.rows[0].game_id,
+      '401900001'
+    );
+
+    assert.equal(
+      new Date(savedGames.rows[0].game_date).toISOString(),
+      '2026-10-01T23:00:00.000Z'
+    );
+
+    assert.equal(
+      savedGames.rows[1].game_id,
+      '401900002'
+    );
+
+    assert.equal(
+      new Date(savedGames.rows[1].game_date).toISOString(),
+      '2026-10-02T23:00:00.000Z'
+    );
+
+    assert.equal(
+      savedGames.rows[0].model_version,
+      'first-half-baseline-v1'
+    );
 
     const accuracy = await store.getAccuracy('nba');
 
