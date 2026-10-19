@@ -99,6 +99,7 @@ function parseTotals(playerGroup) {
   };
 }
 
+  
 function parseEvent(event, leagueId) {
   return {
     id: event.id,
@@ -146,9 +147,34 @@ async function initDB() {
     ON game_snapshots (league, game_id, observed_at DESC)
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backtest_results (
+      league TEXT NOT NULL,
+      game_id TEXT NOT NULL,
+      game_date TIMESTAMPTZ,
+      season_type TEXT NOT NULL DEFAULT 'unknown',
+      first_half_total INTEGER NOT NULL,
+      actual_second_half INTEGER NOT NULL,
+      predicted_second_half INTEGER NOT NULL,
+      predicted_total INTEGER NOT NULL,
+      actual_total INTEGER NOT NULL,
+      error INTEGER NOT NULL,
+      absolute_error INTEGER NOT NULL,
+      model_version TEXT NOT NULL DEFAULT 'baseline-v1',
+      evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (league, game_id, model_version)
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS backtest_results_lookup
+    ON backtest_results (league, model_version, game_date)
+  `);
+
   await analyticsStore.init();
   console.log('PostgreSQL connected; game tables ready');
 }
+
 
 async function storeGames(events) {
   for (const event of events) {
