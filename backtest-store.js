@@ -6,34 +6,24 @@ function createBacktestStore(pool) {
     throw new Error('PostgreSQL pool required');
   }
 
+
   async function init() {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS backtest_results (
-        id BIGSERIAL PRIMARY KEY,
-        league TEXT NOT NULL,
-        game_id TEXT NOT NULL,
-        model_version TEXT NOT NULL,
-        first_half_total NUMERIC NOT NULL,
-        predicted_second_half NUMERIC NOT NULL,
-        actual_second_half NUMERIC NOT NULL,
-        predicted_total NUMERIC NOT NULL,
-        actual_total NUMERIC NOT NULL,
-        error NUMERIC NOT NULL,
-        absolute_error NUMERIC NOT NULL,
-        tested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (league, game_id, model_version)
-      )
+    const result = await pool.query(`
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = current_schema()
+        AND table_name = 'backtest_results'
     `);
 
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS backtest_results_lookup
-      ON backtest_results (
-        league, model_version, tested_at DESC
-      )
-    `);
+    if (result.rows.length === 0) {
+      throw new Error(
+        'Backtest results table is missing'
+      );
+    }
 
     console.log('Backtest results table ready');
   }
+  
 
   async function saveReport(
     league,
@@ -75,7 +65,7 @@ function createBacktestStore(pool) {
         throw new Error('Invalid backtest game data');
       }
 
-      await pool.query(`
+    const insertResult = await pool.query(`
         INSERT INTO backtest_results (
           league, game_id, model_version,
           first_half_total, predicted_second_half,
@@ -95,7 +85,7 @@ function createBacktestStore(pool) {
         ...values
       ]);
 
-      saved++;
+      saved += insertResult.rowCount;
     }
 
     return { processedGames: saved };
