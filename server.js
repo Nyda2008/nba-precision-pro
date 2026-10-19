@@ -10,7 +10,8 @@ const { analyzeGame } = require('./stats-engine');
 const { createAnalyticsStore } = require('./analytics-store');
 const { analyzePeriods } = require('./halftime-engine');
 const { backtestGames } = require('./backtest-engine');
-
+const { createBacktestStore } = require('./backtest-store');
+  
 
 const PORT = Number(process.env.PORT) || 3000;
 const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball';
@@ -22,6 +23,7 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000
 });
 const analyticsStore = createAnalyticsStore(pool);
+const backtestStore = createBacktestStore(pool);
 
 const leagues = [
   { id: 'nba', name: 'NBA', country: 'USA', provider: 'espn' },
