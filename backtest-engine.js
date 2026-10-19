@@ -1,20 +1,133 @@
 
 'use strict';
 
+function round(value, places = 2) {
+  return Number(value.toFixed(places));
+}
+
+function summarize(results) {
+  const n = results.length;
+
+  if (n === 0) return null;
+
+  const errors = results.map(
+    game => game.error
+  );
+
+  const absoluteErrors = results
+    .map(game => game.absoluteError)
+    .sort((a, b) => a - b);
+
+  const total = values =>
+    values.reduce(
+      (sum, value) => sum + value,
+      0
+    );
+
+  const meanAbsoluteError =
+    total(absoluteErrors) / n;
+
+  const averageBias =
+    total(errors) / n;
+
+  const rootMeanSquaredError = Math.sqrt(
+    total(errors.map(error => error ** 2)) / n
+  );
+
+  const midpoint = Math.floor(n / 2);
+
+  const medianAbsoluteError = n % 2 === 0
+    ? (
+        absoluteErrors[midpoint - 1] +
+        absoluteErrors[midpoint]
+      ) / 2
+    : absoluteErrors[midpoint];
+
+  const p90Index = Math.ceil(n * 0.9) - 1;
+
+  const within = limit => round(
+    100 * absoluteErrors.filter(
+      error => error <= limit
+    ).length / n,
+    1
+  );
+
+  return {
+    meanAbsoluteError: round(
+      meanAbsoluteError
+    ),
+    averageBias: round(
+      averageBias
+    ),
+    rootMeanSquaredError: round(
+      rootMeanSquaredError
+    ),
+    within5Points: within(5),
+    within10Points: within(10),
+    within15Points: within(15),
+    medianAbsoluteError: round(
+      medianAbsoluteError
+    ),
+    p90AbsoluteError: round(
+      absoluteErrors[p90Index]
+    ),
+    predictedOver: errors.filter(
+      error => error > 0
+    ).length,
+    predictedUnder: errors.filter(
+      error => error < 0
+    ).length,
+    predictedExactly: errors.filter(
+      error => error === 0
+    ).length
+  };
+}
+
+function monthFromDate(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  if (!Number.isFinite(date.getTime())) {
+    return null;
+  }
+
+  return date.toISOString().slice(0, 7);
+}
+
 function backtestGames(games) {
   if (!Array.isArray(games)) {
-    throw new Error('Games must be an array');
+    throw new Error(
+      'Games must be an array'
+    );
   }
 
   const results = [];
 
   for (const game of games) {
-    const firstHalf = Number(game.firstHalfTotal);
-    const secondHalf = Number(game.secondHalfTotal);
+    if (
+      !game ||
+      game.firstHalfTotal == null ||
+      game.secondHalfTotal == null
+    ) {
+      continue;
+    }
+
+    const firstHalf = Number(
+      game.firstHalfTotal
+    );
+
+    const secondHalf = Number(
+      game.secondHalfTotal
+    );
 
     if (
-      game.firstHalfTotal == null ||
-      game.secondHalfTotal == null ||
       !Number.isFinite(firstHalf) ||
       !Number.isFinite(secondHalf)
     ) {
@@ -22,9 +135,15 @@ function backtestGames(games) {
     }
 
     const predictedSecondHalf = firstHalf;
-    const actualTotal = firstHalf + secondHalf;
-    const predictedTotal = firstHalf * 2;
-    const error = predictedTotal - actualTotal;
+
+    const actualTotal =
+      firstHalf + secondHalf;
+
+    const predictedTotal =
+      firstHalf * 2;
+
+    const error =
+      predictedTotal - actualTotal;
 
     results.push({
       gameId: game.gameId,
@@ -39,42 +158,51 @@ function backtestGames(games) {
     });
   }
 
-  const n = results.length;
-
-  if (n === 0) {
+  if (results.length === 0) {
     return {
       gamesTested: 0,
       results: [],
-      metrics: null
+      metrics: null,
+      monthlyAccuracy: []
     };
   }
 
-  const sum = fn =>
-    results.reduce((total, game) => total + fn(game), 0);
+  const groups = new Map();
 
-  const mae = sum(g => g.absoluteError) / n;
-  const bias = sum(g => g.error) / n;
+  for (const result of results) {
+    const month = monthFromDate(
+      result.gameDate
+    );
 
-  const rmse = Math.sqrt(
-    sum(g => g.error ** 2) / n
-  );
+    if (!month) continue;
 
-  const within = threshold =>
-    100 * results.filter(
-      g => g.absoluteError <= threshold
-    ).length / n;
+    if (!groups.has(month)) {
+      groups.set(month, []);
+    }
+
+    groups.get(month).push(result);
+  }
+
+  const monthlyAccuracy = Array.from(
+    groups.entries()
+  )
+    .sort(([a], [b]) =>
+      a.localeCompare(b)
+    )
+    .map(([month, monthResults]) => ({
+      month,
+      gamesTested: monthResults.length,
+      meanAbsoluteError:
+        summarize(monthResults).meanAbsoluteError,
+      averageBias:
+        summarize(monthResults).averageBias
+    }));
 
   return {
-    gamesTested: n,
-    metrics: {
-      meanAbsoluteError: Number(mae.toFixed(2)),
-      averageBias: Number(bias.toFixed(2)),
-      rootMeanSquaredError: Number(rmse.toFixed(2)),
-      within5Points: Number(within(5).toFixed(1)),
-      within10Points: Number(within(10).toFixed(1)),
-      within15Points: Number(within(15).toFixed(1))
-    },
-    results
+    gamesTested: results.length,
+    metrics: summarize(results),
+    results,
+    monthlyAccuracy
   };
 }
 
