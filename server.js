@@ -174,6 +174,7 @@ async function initDB() {
   `);
 
   await analyticsStore.init();
+  await backtestStore.init();
   console.log('PostgreSQL connected; game tables ready');
 }
 
@@ -868,7 +869,7 @@ async function handler(req, res) {
 
 
       const report = backtestGames(games);
-
+      await backtestStore.saveReport(league, report);
       return send(res, 200, {
         source: 'ESPN',
         league,
@@ -897,15 +898,17 @@ async function handler(req, res) {
           AND status = 'Final'
       `, [league]);
 
+      
+      const accuracy = await backtestStore.getAccuracy(league);
+
       return send(res, 200, {
         source: 'PostgreSQL',
         league,
         ...result.rows[0],
-        note: 'Combined prediction metrics not calculated yet'
+        modelVersion: 'first-half-baseline-v1',
+        accuracy
       });
     }
-
-
     
       if (u.pathname === '/api/db/stats') {
       const result = await pool.query(`
