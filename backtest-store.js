@@ -1,11 +1,9 @@
-
 'use strict';
 
 function createBacktestStore(pool) {
   if (!pool || typeof pool.query !== 'function') {
     throw new Error('PostgreSQL pool required');
   }
-
 
   async function init() {
     const result = await pool.query(`
@@ -23,7 +21,6 @@ function createBacktestStore(pool) {
 
     console.log('Backtest results table ready');
   }
-  
 
   async function saveReport(
     league,
@@ -65,16 +62,23 @@ function createBacktestStore(pool) {
         throw new Error('Invalid backtest game data');
       }
 
-    const insertResult = await pool.query(`
+      const insertResult = await pool.query(`
         INSERT INTO backtest_results (
-          league, game_id, model_version,
-          first_half_total, predicted_second_half,
-          actual_second_half, predicted_total,
-          actual_total, error, absolute_error
+          league,
+          game_id,
+          model_version,
+          game_date,
+          first_half_total,
+          predicted_second_half,
+          actual_second_half,
+          predicted_total,
+          actual_total,
+          error,
+          absolute_error
         )
         VALUES (
-          $1, $2, $3, $4, $5,
-          $6, $7, $8, $9, $10
+          $1, $2, $3, $4, $5, $6,
+          $7, $8, $9, $10, $11
         )
         ON CONFLICT (league, game_id, model_version)
         DO NOTHING
@@ -82,6 +86,7 @@ function createBacktestStore(pool) {
         league,
         String(game.gameId),
         modelVersion,
+        game.gameDate ?? null,
         ...values
       ]);
 
@@ -135,4 +140,3 @@ function createBacktestStore(pool) {
 }
 
 module.exports = { createBacktestStore };
-  
