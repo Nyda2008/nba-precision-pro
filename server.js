@@ -10,7 +10,9 @@ const { analyzeGame } = require('./stats-engine');
 const { createAnalyticsStore } = require('./analytics-store');
 const { analyzePeriods } = require('./halftime-engine');
 const { backtestGames } = require('./backtest-engine');
-
+const { createBacktestStore } = require('./backtest-store');
+const { createPredictionStore } = require('./prediction-store');
+const { createHalftimeCollector } = require('./halftime-collector');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball';
@@ -21,7 +23,13 @@ const pool = new Pool({
   max: 5,
   connectionTimeoutMillis: 10000
 });
+
 const analyticsStore = createAnalyticsStore(pool);
+const backtestStore = createBacktestStore(pool);
+const predictionStore = createPredictionStore(pool);
+const halftimeCollector = createHalftimeCollector({
+  store: predictionStore
+});
 
 const leagues = [
   { id: 'nba', name: 'NBA', country: 'USA', provider: 'espn' },
@@ -54,43 +62,43 @@ function send(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-async function getJSON(key, url, ttl = 15000) {
-  const old = cache.get(key);
-  if (old && Date.now() - old.time < ttl) return old.data;
-
+async function fetchESPN(url) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 9000);
-
   try {
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'NBA-Precision-Pro/1.0 (personal analytics)',
-        'Accept': 'application/json'
+        Accept: 'application/json',
+        'Cache-Control': 'no-cache'
       },
+      cache: 'no-store',
       signal: controller.signal
     });
-
     if (!response.ok) {
       throw new Error('Data provider returned ' + response.status);
     }
-
-    const data = await response.json();
-    cache.set(key, { time: Date.now(), data });
-    return data;
+    return await response.json();
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function getJSON(key, url, ttl = 15000) {
+  const old = cache.get(key);
+  if (old && Date.now() - old.time < ttl) return old.data;
+  const data = await fetchESPN(url);
+  cache.set(key, { time: Date.now(), data });
+  return data;
 }
 
 function parseTotals(playerGroup) {
   const team = playerGroup.team || {};
   const statistics = playerGroup.statistics?.[0] || {};
   const stats = {};
-
   (statistics.labels || []).forEach((label, index) => {
     stats[label] = (statistics.totals || [])[index];
   });
-
   return {
     id: team.id,
     name: team.displayName,
@@ -99,7 +107,6 @@ function parseTotals(playerGroup) {
   };
 }
 
-  
 function parseEvent(event, leagueId) {
   return {
     id: event.id,
@@ -172,9 +179,11 @@ async function initDB() {
   `);
 
   await analyticsStore.init();
-  console.log('PostgreSQL connected; game tables ready');
-}
+  await backtestStore.init();
+  await predictionStore.init();
 
+  console.log('PostgreSQL connected; game and prediction tables ready');
+}
 
 async function storeGames(events) {
   for (const event of events) {
@@ -192,9 +201,9 @@ async function storeGames(events) {
     await pool.query(`
       INSERT INTO games (
         league, game_id, game_date, name, status, data
-      )
-      VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-      ON CONFLICT (league, game_id) DO UPDATE SET
+      ) VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+      ON CONFLICT (league, game_id)
+      DO UPDATE SET
         game_date = EXCLUDED.game_date,
         name = EXCLUDED.name,
         status = EXCLUDED.status,
@@ -207,8 +216,7 @@ async function storeGames(events) {
       SELECT $1, $2, $3::jsonb
       WHERE NOT EXISTS (
         SELECT 1 FROM (
-          SELECT data
-          FROM game_snapshots
+          SELECT data FROM game_snapshots
           WHERE league = $1 AND game_id = $2
           ORDER BY observed_at DESC, id DESC
           LIMIT 1
@@ -231,12 +239,31 @@ async function loadGames(leagueId) {
     20000
   );
 
-  const events = (data.events || []).map(e =>
-    parseEvent(e, leagueId)
+  const events = (data.events || []).map(event =>
+    parseEvent(event, leagueId)
   );
 
   await storeGames(events);
   return events;
+}
+
+function validGameId(id) {
+  return /^\d{5,15}$/.test(id || '');
+}
+
+function validLeague(league) {
+  return league === 'nba' || league === 'wnba';
+}
+
+function parseDate(date) {
+  return Boolean(date) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(date) &&
+    Number.isFinite(Date.parse(date)) &&
+    new Date(date).toISOString().slice(0, 10) === date;
+}
+
+function summaryURL(league, id) {
+  return ESPN + '/' + league + '/summary?event=' + id;
 }
 
 const root = path.resolve(__dirname, 'public');
@@ -257,7 +284,6 @@ async function handler(req, res) {
 
     if (u.pathname === '/api/health') {
       await pool.query('SELECT 1');
-
       return send(res, 200, {
         ok: true,
         service: 'NBA Precision Pro',
@@ -268,17 +294,17 @@ async function handler(req, res) {
 
     if (u.pathname === '/api/leagues') {
       return send(res, 200, {
-        leagues: leagues.map(l => ({
-          ...l,
-          available: Boolean(l.provider)
+        leagues: leagues.map(league => ({
+          ...league,
+          available: Boolean(league.provider)
         }))
       });
     }
 
     if (u.pathname === '/api/games/all') {
-      const active = leagues.filter(l => l.provider);
+      const active = leagues.filter(league => league.provider);
       const results = await Promise.allSettled(
-        active.map(l => loadGames(l.id))
+        active.map(league => loadGames(league.id))
       );
 
       const events = [];
@@ -304,8 +330,12 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/games') {
-      const leagueId = u.searchParams.get('league') || 'nba';
-      const league = leagues.find(l => l.id === leagueId);
+      const leagueId =
+        u.searchParams.get('league') || 'nba';
+
+      const league = leagues.find(
+        item => item.id === leagueId
+      );
 
       if (!league) {
         return send(res, 400, {
@@ -330,8 +360,12 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/game') {
-      const leagueId = u.searchParams.get('league') || 'nba';
-      const league = leagues.find(l => l.id === leagueId);
+      const leagueId =
+        u.searchParams.get('league') || 'nba';
+
+      const league = leagues.find(
+        item => item.id === leagueId
+      );
 
       if (!league) {
         return send(res, 400, {
@@ -341,13 +375,13 @@ async function handler(req, res) {
 
       if (!league.provider) {
         return send(res, 503, {
-          error: 'No live provider configured for ' + league.name
+          error: 'No data provider configured for ' + league.name
         });
       }
 
       const id = u.searchParams.get('id');
 
-      if (!/^\d{5,15}$/.test(id || '')) {
+      if (!validGameId(id)) {
         return send(res, 400, {
           error: 'Invalid game ID'
         });
@@ -355,7 +389,7 @@ async function handler(req, res) {
 
       const data = await getJSON(
         'game:' + league.id + ':' + id,
-        ESPN + '/' + league.id + '/summary?event=' + id,
+        summaryURL(league.id, id),
         12000
       );
 
@@ -377,18 +411,23 @@ async function handler(req, res) {
         notes: 'Unavailable statistics are not estimated or filled in.'
       });
     }
-    
-    if (u.pathname === '/api/game/quarters') {
-      const league = u.searchParams.get('league') || 'nba';
+
+    if (
+      u.pathname === '/api/game/quarters' ||
+      u.pathname === '/api/game/halftime'
+    ) {
+      const league =
+        u.searchParams.get('league') || 'nba';
+
       const id = u.searchParams.get('id');
 
-      if (!['nba', 'wnba'].includes(league)) {
+      if (!validLeague(league)) {
         return send(res, 400, {
           error: 'Unsupported league'
         });
       }
 
-      if (!/^\d{5,15}$/.test(id || '')) {
+      if (!validGameId(id)) {
         return send(res, 400, {
           error: 'Invalid game ID'
         });
@@ -396,72 +435,25 @@ async function handler(req, res) {
 
       const data = await getJSON(
         'game:' + league + ':' + id,
-        ESPN + '/' + league + '/summary?event=' + id,
+        summaryURL(league, id),
         12000
       );
 
-      const competition = data.header?.competitions?.[0];
+      const competition =
+        data.header?.competitions?.[0];
 
-      const teams = (competition?.competitors || []).map(c => ({
-        team: c.team?.displayName,
-        homeAway: c.homeAway,
-        totalScore: c.score,
-        
-        quarters: (c.linescores || []).map((q, index) => {
-          const rawPoints = q.value ?? q.displayValue ?? null;
-          const points = rawPoints === null || rawPoints === ''
-            ? null
-            : Number(rawPoints);
-
-          return {
-            period: q.period || index + 1,
-            points: Number.isFinite(points) ? points : null
-          };
-        })
-      }));
-
-      return send(res, 200, {
-        source: 'ESPN',
-        league,
-        gameId: id,
-        status: competition?.status?.type?.description || null,
-        teams
-      });
-    }
-    
-    if (u.pathname === '/api/game/halftime') {
-      const league = u.searchParams.get('league') || 'nba';
-      const id = u.searchParams.get('id');
-
-      if (!['nba', 'wnba'].includes(league)) {
-        return send(res, 400, {
-          error: 'Unsupported league'
-        });
-      }
-
-      if (!/^\d{5,15}$/.test(id || '')) {
-        return send(res, 400, {
-          error: 'Invalid game ID'
-        });
-      }
-
-      const data = await getJSON(
-        'game:' + league + ':' + id,
-        ESPN + '/' + league + '/summary?event=' + id,
-        12000
-      );
-
-      const competition = data.header?.competitions?.[0];
-
-      const teams = (competition?.competitors || []).map(c => ({
+      const teams = (
+        competition?.competitors || []
+      ).map(c => ({
         team: c.team?.displayName,
         homeAway: c.homeAway,
         totalScore: c.score,
         quarters: (c.linescores || []).map((q, index) => {
           const raw = q.value ?? q.displayValue ?? null;
-          const value = raw === null || raw === ''
-            ? null
-            : Number(raw);
+          const value =
+            raw === null || raw === ''
+              ? null
+              : Number(raw);
 
           return {
             period: q.period || index + 1,
@@ -469,6 +461,17 @@ async function handler(req, res) {
           };
         })
       }));
+
+      if (u.pathname === '/api/game/quarters') {
+        return send(res, 200, {
+          source: 'ESPN',
+          league,
+          gameId: id,
+          status:
+            competition?.status?.type?.description || null,
+          teams
+        });
+      }
 
       if (teams.length !== 2) {
         return send(res, 422, {
@@ -482,16 +485,55 @@ async function handler(req, res) {
         source: 'ESPN',
         league,
         gameId: id,
-        status: competition?.status?.type?.description || null,
+        status:
+          competition?.status?.type?.description || null,
         ...analysis
       });
     }
+
+    // Returns only previously saved halftime predictions.
+    if (u.pathname === '/api/predictions') {
+      const league =
+        u.searchParams.get('league') || 'nba';
+
+      const id = u.searchParams.get('id');
+
+      if (!validLeague(league)) {
+        return send(res, 400, {
+          error: 'Unsupported league'
+        });
+      }
+
+      if (!validGameId(id)) {
+        return send(res, 400, {
+          error: 'Invalid game ID'
+        });
+      }
+
+      const records =
+        await predictionStore.getGamePredictions(league, id);
+
+      return send(res, 200, {
+        source: 'PostgreSQL',
+        league,
+        gameId: id,
+        count: records.length,
+        predictions: records
+      });
+    }
+
     if (u.pathname === '/api/analyze') {
-      const leagueId = u.searchParams.get('league') || 'nba';
-      const league = leagues.find(l => l.id === leagueId);
+      const leagueId =
+        u.searchParams.get('league') || 'nba';
+
+      const league = leagues.find(
+        item => item.id === leagueId
+      );
 
       if (!league) {
-        return send(res, 400, { error: 'Unknown league' });
+        return send(res, 400, {
+          error: 'Unknown league'
+        });
       }
 
       if (!league.provider) {
@@ -502,13 +544,15 @@ async function handler(req, res) {
 
       const id = u.searchParams.get('id');
 
-      if (!/^\d{5,15}$/.test(id || '')) {
-        return send(res, 400, { error: 'Invalid game ID' });
+      if (!validGameId(id)) {
+        return send(res, 400, {
+          error: 'Invalid game ID'
+        });
       }
 
       const data = await getJSON(
         'game:' + league.id + ':' + id,
-        ESPN + '/' + league.id + '/summary?event=' + id,
+        summaryURL(league.id, id),
         12000
       );
 
@@ -518,39 +562,39 @@ async function handler(req, res) {
         league: league.id,
         teams
       });
-      
+
       await analyticsStore.save(id, analysis);
 
       return send(res, 200, {
         source: 'ESPN',
         gameId: id,
-        gameStatus: data.header?.competitions?.[0]?.status?.type?.description || null,
+        gameStatus:
+          data.header?.competitions?.[0]
+            ?.status?.type?.description || null,
         ...analysis
       });
     }
 
-
-      
     if (u.pathname === '/api/analytics/history') {
-      const league = u.searchParams.get('league') || 'nba';
+      const league =
+        u.searchParams.get('league') || 'nba';
+
       const id = u.searchParams.get('id');
 
-      if (!['nba', 'wnba'].includes(league)) {
+      if (!validLeague(league)) {
         return send(res, 400, {
           error: 'Unsupported league'
         });
       }
 
-      if (!/^\d{5,15}$/.test(id || '')) {
+      if (!validGameId(id)) {
         return send(res, 400, {
           error: 'Invalid game ID'
         });
       }
 
-      const history = await analyticsStore.getGameHistory(
-        league,
-        id
-      );
+      const history =
+        await analyticsStore.getGameHistory(league, id);
 
       return send(res, 200, {
         league,
@@ -560,36 +604,37 @@ async function handler(req, res) {
       });
     }
 
- 
     if (u.pathname === '/api/games/import-range') {
-      const league = u.searchParams.get('league') || 'nba';
-      const startDate = u.searchParams.get('start');
-      const days = Number(u.searchParams.get('days') || 1);
+      const league =
+        u.searchParams.get('league') || 'nba';
 
-      if (!['nba', 'wnba'].includes(league)) {
+      const startDate = u.searchParams.get('start');
+      const days = Number(
+        u.searchParams.get('days') || 1
+      );
+
+      if (!validLeague(league)) {
         return send(res, 400, {
           error: 'Unsupported league'
         });
       }
 
-      if (
-        !startDate ||
-        !/^\d{4}-\d{2}-\d{2}$/.test(startDate) ||
-        !Number.isFinite(Date.parse(startDate)) ||
-        new Date(startDate).toISOString().slice(0, 10) !== startDate
-      ) {
+      if (!parseDate(startDate)) {
         return send(res, 400, {
           error: 'Invalid start date; use YYYY-MM-DD'
         });
       }
 
-      if (!Number.isInteger(days) || days < 1 || days > 3) {
+      if (
+        !Number.isInteger(days) ||
+        days < 1 ||
+        days > 3
+      ) {
         return send(res, 400, {
           error: 'Days must be between 1 and 3'
         });
       }
 
-      
       const batches = [];
       let totalImported = 0;
 
@@ -648,26 +693,21 @@ async function handler(req, res) {
         totalImported,
         batches
       });
-
     }
 
-
     if (u.pathname === '/api/games/import-date') {
-      const league = u.searchParams.get('league') || 'nba';
+      const league =
+        u.searchParams.get('league') || 'nba';
+
       const date = u.searchParams.get('date');
 
-      if (!['nba', 'wnba'].includes(league)) {
+      if (!validLeague(league)) {
         return send(res, 400, {
           error: 'Unsupported league'
         });
       }
 
-      if (
-        !date ||
-        !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
-        !Number.isFinite(Date.parse(date)) ||
-        new Date(date).toISOString().slice(0, 10) !== date
-      ) {
+      if (!parseDate(date)) {
         return send(res, 400, {
           error: 'Invalid date; use YYYY-MM-DD'
         });
@@ -677,7 +717,8 @@ async function handler(req, res) {
 
       const data = await getJSON(
         'historical:' + league + ':' + espnDate,
-        ESPN + '/' + league + '/scoreboard?dates=' + espnDate,
+        ESPN + '/' + league +
+          '/scoreboard?dates=' + espnDate,
         60000
       );
 
@@ -695,52 +736,35 @@ async function handler(req, res) {
         events
       });
     }
-    if (u.pathname === '/api/games/history') {
-      const league = u.searchParams.get('league') || 'nba';
 
-      if (!['nba', 'wnba'].includes(league)) {
+    if (u.pathname === '/api/games/history') {
+      const league =
+        u.searchParams.get('league') || 'nba';
+
+      if (!validLeague(league)) {
         return send(res, 400, {
           error: 'Unsupported league'
         });
       }
 
-      
       const date = u.searchParams.get('date');
 
-      if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      if (date && !parseDate(date)) {
         return send(res, 400, {
-          error: 'Date must use YYYY-MM-DD'
+          error: 'Invalid date; use YYYY-MM-DD'
         });
       }
-
-      
-      if (date && (
-        !Number.isFinite(Date.parse(date)) ||
-        new Date(date).toISOString().slice(0, 10) !== date
-      )) {
-        return send(res, 400, {
-          error: 'Invalid date'
-        });
-      }
-
 
       const result = await pool.query(`
-        SELECT
-          game_id,
-          game_date,
-          name,
-          status,
-          data
+        SELECT game_id, game_date, name, status, data
         FROM games
-        WHERE league = $1
-          AND (
-            $2::date IS NULL
-            OR (game_date AT TIME ZONE 'America/New_York')::date = $2::date
-          )
+        WHERE league = $1 AND (
+          $2::date IS NULL OR
+          (game_date AT TIME ZONE 'America/New_York')::date = $2::date
+        )
         ORDER BY game_date DESC NULLS LAST
         LIMIT 50
       `, [league, date || null]);
-
 
       return send(res, 200, {
         league,
@@ -748,16 +772,17 @@ async function handler(req, res) {
         games: result.rows
       });
     }
-    
-    if (u.pathname === '/api/backtest') {
-      const league = u.searchParams.get('league') || 'nba';
 
-      if (!['nba', 'wnba'].includes(league)) {
+    if (u.pathname === '/api/backtest') {
+      const league =
+        u.searchParams.get('league') || 'nba';
+
+      if (!validLeague(league)) {
         return send(res, 400, {
           error: 'Unsupported league'
         });
       }
-     
+
       const requestedLimit = Number(
         u.searchParams.get('limit') || 10
       );
@@ -770,8 +795,8 @@ async function handler(req, res) {
         return send(res, 400, {
           error: 'Limit must be between 1 and 10'
         });
-      } 
-      
+      }
+
       const requestedOffset = Number(
         u.searchParams.get('offset') || 0
       );
@@ -785,19 +810,18 @@ async function handler(req, res) {
           error: 'Offset must be between 0 and 10000'
         });
       }
-      
-            
+
       const result = await pool.query(`
         SELECT game_id, game_date
         FROM games
-        WHERE league = $1
-          AND status = 'Final'
+        WHERE league = $1 AND status = 'Final'
         ORDER BY game_date DESC, game_id DESC
-        LIMIT $2
-        OFFSET $3
-      `, [league, requestedLimit, requestedOffset]);
-
-
+        LIMIT $2 OFFSET $3
+      `, [
+        league,
+        requestedLimit,
+        requestedOffset
+      ]);
 
       const games = [];
       const skipped = [];
@@ -808,26 +832,32 @@ async function handler(req, res) {
         try {
           const data = await getJSON(
             'game:' + league + ':' + id,
-            ESPN + '/' + league + '/summary?event=' + id,
+            summaryURL(league, id),
             60000
           );
 
-          const competition = data.header?.competitions?.[0];
+          const competition =
+            data.header?.competitions?.[0];
 
           if (!competition?.status?.type?.completed) {
             skipped.push(id);
             continue;
           }
 
-          const teams = (competition.competitors || []).map(c => ({
+          const teams = (
+            competition.competitors || []
+          ).map(c => ({
             team: c.team?.displayName,
             homeAway: c.homeAway,
             totalScore: c.score,
             quarters: (c.linescores || []).map((q, index) => {
-              const raw = q.value ?? q.displayValue ?? null;
-              const points = raw === null || raw === ''
-                ? null
-                : Number(raw);
+              const raw =
+                q.value ?? q.displayValue ?? null;
+
+              const points =
+                raw === null || raw === ''
+                  ? null
+                  : Number(raw);
 
               return {
                 period: q.period || index + 1,
@@ -841,7 +871,6 @@ async function handler(req, res) {
             continue;
           }
 
-          
           const analysis = analyzePeriods(teams);
 
           if (
@@ -853,19 +882,27 @@ async function handler(req, res) {
           }
 
           games.push({
-
             gameId: id,
-            firstHalfTotal: analysis.firstHalf.combinedPoints,
-            secondHalfTotal: analysis.secondHalf.combinedPoints
+            gameDate: row.game_date,
+            firstHalfTotal:
+              analysis.firstHalf.combinedPoints,
+            secondHalfTotal:
+              analysis.secondHalf.combinedPoints
           });
         } catch (error) {
-          console.error('Backtest game failed:', id, error.message);
+          console.error(
+            'Backtest game failed:',
+            id,
+            error.message
+          );
+
           skipped.push(id);
         }
       }
 
-
       const report = backtestGames(games);
+
+      await backtestStore.saveReport(league, report);
 
       return send(res, 200, {
         source: 'ESPN',
@@ -877,9 +914,10 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/backtest/summary') {
-      const league = u.searchParams.get('league') || 'nba';
+      const league =
+        u.searchParams.get('league') || 'nba';
 
-      if (!['nba', 'wnba'].includes(league)) {
+      if (!validLeague(league)) {
         return send(res, 400, {
           error: 'Unsupported league'
         });
@@ -891,25 +929,27 @@ async function handler(req, res) {
           MIN(game_date) AS earliest_game,
           MAX(game_date) AS latest_game
         FROM games
-        WHERE league = $1
-          AND status = 'Final'
+        WHERE league = $1 AND status = 'Final'
       `, [league]);
+
+      const accuracy =
+        await backtestStore.getAccuracy(league);
 
       return send(res, 200, {
         source: 'PostgreSQL',
         league,
         ...result.rows[0],
-        note: 'Combined prediction metrics not calculated yet'
+        modelVersion: 'first-half-baseline-v1',
+        accuracy
       });
     }
 
-
-    
-      if (u.pathname === '/api/db/stats') {
+    if (u.pathname === '/api/db/stats') {
       const result = await pool.query(`
         SELECT
           (SELECT COUNT(*)::int FROM games) AS games,
-          (SELECT COUNT(*)::int FROM game_snapshots) AS snapshots
+          (SELECT COUNT(*)::int FROM game_snapshots)
+            AS snapshots
       `);
 
       return send(res, 200, {
@@ -922,7 +962,9 @@ async function handler(req, res) {
 
     try {
       relative = decodeURIComponent(
-        u.pathname === '/' ? 'index.html' : u.pathname.slice(1)
+        u.pathname === '/'
+          ? 'index.html'
+          : u.pathname.slice(1)
       );
     } catch {
       return send(res, 400, {
@@ -945,7 +987,8 @@ async function handler(req, res) {
       }
 
       res.writeHead(200, {
-        'Content-Type': mime[path.extname(full)] ||
+        'Content-Type':
+          mime[path.extname(full)] ||
           'application/octet-stream',
         'X-Content-Type-Options': 'nosniff'
       });
@@ -966,22 +1009,57 @@ const PREGAME_POLL_MS = 60000;
 const IDLE_POLL_MS = 300000;
 
 let collectorRunning = false;
-let collectorTimer = null;
+
 async function collectGameAnalytics(event) {
   const gameId = String(event.id || '');
   const leagueId = event.league;
 
-  if (!/^\d{5,15}$/.test(gameId)) return;
+  if (!validGameId(gameId)) return;
 
   try {
-    const data = await getJSON(
-      'game:' + leagueId + ':' + gameId,
-      ESPN + '/' + leagueId + '/summary?event=' + gameId,
-      12000
-    );
+    const isHalftime =
+      (event.status || '').trim().toLowerCase() === 'halftime';
 
-    const teams = (data.boxscore?.players || [])
-      .map(parseTotals);
+    const url = summaryURL(leagueId, gameId);
+
+    // Fresh ESPN summary for halftime capture.
+    const data = isHalftime
+      ? await fetchESPN(url)
+      : await getJSON(
+          'game:' + leagueId + ':' + gameId,
+          url,
+          12000
+        );
+
+    const observedAt = new Date().toISOString();
+
+    if (isHalftime) {
+      try {
+        const outcome = await halftimeCollector.capture({
+          league: leagueId,
+          gameId,
+          summary: data,
+          observedAt
+        });
+
+        console.log(
+          'Halftime capture:',
+          leagueId,
+          gameId,
+          outcome.status,
+          outcome.reason || ''
+        );
+      } catch (error) {
+        console.error(
+          'Halftime capture failed:',
+          leagueId,
+          gameId,
+          error.message
+        );
+      }
+    }
+
+    const teams = (data.boxscore?.players || []).map(parseTotals);
 
     if (!teams.length) return;
 
@@ -1022,39 +1100,48 @@ async function collectLiveGames() {
     let upcomingFound = false;
 
     for (const leagueId of ['nba', 'wnba']) {
-      cache.delete('games:' + leagueId);
+      try {
+        cache.delete('games:' + leagueId);
 
-      const events = await loadGames(leagueId);
+        const events = await loadGames(leagueId);
 
-      for (const event of events) {
-        const status = (event.status || '').toLowerCase();
+        for (const event of events) {
+          const status =
+            (event.status || '').toLowerCase();
 
-        if (
-          status.includes('progress') ||
-          status.includes('halftime') ||
-          status.includes('end of')
-        ) {
-          liveFound = true;
-          await collectGameAnalytics(event);
+          if (
+            status.includes('progress') ||
+            status.includes('halftime') ||
+            status.includes('end of')
+          ) {
+            liveFound = true;
+            await collectGameAnalytics(event);
+          }
+
+          const tipoff = Date.parse(event.date);
+
+          if (
+            Number.isFinite(tipoff) &&
+            tipoff > Date.now() &&
+            tipoff - Date.now() < 1800000
+          ) {
+            upcomingFound = true;
+          }
         }
-
-        const tipoff = Date.parse(event.date);
-
-        if (
-          Number.isFinite(tipoff) &&
-          tipoff > Date.now() &&
-          tipoff - Date.now() < 1800000
-        ) {
-          upcomingFound = true;
-        }
+      } catch (error) {
+        console.error(
+          'League collection failed:',
+          leagueId,
+          error.message
+        );
       }
     }
 
-    if (liveFound) {
-      nextInterval = LIVE_POLL_MS;
-    } else if (upcomingFound) {
-      nextInterval = PREGAME_POLL_MS;
-    }
+    nextInterval = liveFound
+      ? LIVE_POLL_MS
+      : upcomingFound
+        ? PREGAME_POLL_MS
+        : IDLE_POLL_MS;
 
     console.log(
       'Game collector completed:',
@@ -1068,11 +1155,7 @@ async function collectLiveGames() {
     nextInterval = PREGAME_POLL_MS;
   } finally {
     collectorRunning = false;
-
-    collectorTimer = setTimeout(
-      collectLiveGames,
-      nextInterval
-    );
+    setTimeout(collectLiveGames, nextInterval);
   }
 }
 
@@ -1082,12 +1165,17 @@ function startCollector() {
 }
 
 if (!process.env.DATABASE_URL) {
-  console.error('Missing DATABASE_URL environment variable');
+  console.error(
+    'Missing DATABASE_URL environment variable'
+  );
   process.exit(1);
 }
 
 pool.on('error', error => {
-  console.error('PostgreSQL pool error:', error.message);
+  console.error(
+    'PostgreSQL pool error:',
+    error.message
+  );
 });
 
 initDB()
@@ -1098,6 +1186,9 @@ initDB()
     });
   })
   .catch(error => {
-    console.error('Database startup failed:', error.message);
+    console.error(
+      'Database startup failed:',
+      error.message
+    );
     process.exit(1);
   });
