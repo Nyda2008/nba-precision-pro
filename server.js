@@ -786,8 +786,9 @@ async function handler(req, res) {
         });
       }
       
+            
       const result = await pool.query(`
-        SELECT game_id
+        SELECT game_id, game_date
         FROM games
         WHERE league = $1
           AND status = 'Final'
@@ -863,6 +864,7 @@ async function handler(req, res) {
         }
       }
 
+
       const report = backtestGames(games);
 
       return send(res, 200, {
@@ -873,7 +875,7 @@ async function handler(req, res) {
         ...report
       });
     }
-    
+
     if (u.pathname === '/api/backtest/summary') {
       const league = u.searchParams.get('league') || 'nba';
 
@@ -902,7 +904,8 @@ async function handler(req, res) {
     }
 
 
-    if (u.pathname === '/api/db/stats') {
+    
+      if (u.pathname === '/api/db/stats') {
       const result = await pool.query(`
         SELECT
           (SELECT COUNT(*)::int FROM games) AS games,
