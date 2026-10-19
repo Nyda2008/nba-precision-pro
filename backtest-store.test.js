@@ -4,7 +4,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Pool } = require('pg');
-const { createBacktestStore } = require('../backtest-store');
+const { createBacktestStore } = require('./backtest-store');
+
 
 test('PostgreSQL backtest storage and accuracy', async () => {
   if (
