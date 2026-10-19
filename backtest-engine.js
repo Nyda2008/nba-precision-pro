@@ -28,6 +28,7 @@ function backtestGames(games) {
 
     results.push({
       gameId: game.gameId,
+      gameDate: game.gameDate ?? null,
       firstHalfTotal: firstHalf,
       actualSecondHalf: secondHalf,
       predictedSecondHalf,
@@ -53,7 +54,10 @@ function backtestGames(games) {
 
   const mae = sum(g => g.absoluteError) / n;
   const bias = sum(g => g.error) / n;
-  const rmse = Math.sqrt(sum(g => g.error ** 2) / n);
+
+  const rmse = Math.sqrt(
+    sum(g => g.error ** 2) / n
+  );
 
   const within = threshold =>
     100 * results.filter(
