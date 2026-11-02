@@ -23,7 +23,7 @@ const pool = new Pool({
   max: 5,
   connectionTimeoutMillis: 10000
 });
-e
+
 const analyticsStore = createAnalyticsStore(pool);
 const backtestStore = createBacktestStore(pool);
 const predictionStore = createPredictionStore(pool);
