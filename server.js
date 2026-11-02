@@ -916,7 +916,7 @@ async function handler(req, res) {
                 points: Number.isFinite(points) ? points : null
               };
             })
-          ));
+          }));
 
           if (teams.length !== 2) {
             skipped.push(id);
