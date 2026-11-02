@@ -23,7 +23,7 @@ const pool = new Pool({
   max: 5,
   connectionTimeoutMillis: 10000
 });
-
+e
 const analyticsStore = createAnalyticsStore(pool);
 const backtestStore = createBacktestStore(pool);
 const predictionStore = createPredictionStore(pool);
@@ -34,6 +34,8 @@ const halftimeCollector = createHalftimeCollector({
 const leagues = [
   { id: 'nba', name: 'NBA', country: 'USA', provider: 'espn' },
   { id: 'wnba', name: 'WNBA', country: 'USA', provider: 'espn' },
+  { id: 'ncaam', name: 'NCAA Men', country: 'USA', provider: 'espn' },
+  { id: 'ncaaw', name: 'NCAA Women', country: 'USA', provider: 'espn' },
   { id: 'acb', name: 'Liga ACB', country: 'Spain', provider: null },
   { id: 'cba', name: 'CBA', country: 'China', provider: null },
   { id: 'nbl-au', name: 'NBL', country: 'Australia', provider: null },
@@ -53,6 +55,42 @@ const leagues = [
   { id: 'vtb', name: 'VTB United League', country: 'International', provider: null }
 ];
 
+const ESPN_SLUGS = Object.freeze({
+  nba: 'nba',
+  wnba: 'wnba',
+  ncaam: 'mens-college-basketball',
+  ncaaw: 'womens-college-basketball'
+});
+
+function validLeague(league) {
+  return Object.prototype.hasOwnProperty.call(ESPN_SLUGS, league);
+}
+
+function espnPath(league) {
+  const slug = ESPN_SLUGS[league];
+  if (!slug) throw new Error('ESPN not configured for ' + league);
+  return ESPN + '/' + slug;
+}
+
+function scoreboardURL(league, date) {
+  const params = new URLSearchParams();
+
+  if (date) params.set('dates', date);
+
+  if (league === 'ncaam' || league === 'ncaaw') {
+    params.set('groups', '50');
+    params.set('limit', '500');
+  }
+
+  const query = params.toString();
+  return espnPath(league) + '/scoreboard' +
+    (query ? '?' + query : '');
+}
+
+function summaryURL(league, id) {
+  return espnPath(league) + '/summary?event=' + id;
+}
+
 function send(res, status, data) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -65,6 +103,7 @@ function send(res, status, data) {
 async function fetchESPN(url) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 9000);
+
   try {
     const response = await fetch(url, {
       headers: {
@@ -75,9 +114,11 @@ async function fetchESPN(url) {
       cache: 'no-store',
       signal: controller.signal
     });
+
     if (!response.ok) {
       throw new Error('Data provider returned ' + response.status);
     }
+
     return await response.json();
   } finally {
     clearTimeout(timer);
@@ -86,7 +127,11 @@ async function fetchESPN(url) {
 
 async function getJSON(key, url, ttl = 15000) {
   const old = cache.get(key);
-  if (old && Date.now() - old.time < ttl) return old.data;
+
+  if (old && Date.now() - old.time < ttl) {
+    return old.data;
+  }
+
   const data = await fetchESPN(url);
   cache.set(key, { time: Date.now(), data });
   return data;
@@ -96,9 +141,11 @@ function parseTotals(playerGroup) {
   const team = playerGroup.team || {};
   const statistics = playerGroup.statistics?.[0] || {};
   const stats = {};
+
   (statistics.labels || []).forEach((label, index) => {
     stats[label] = (statistics.totals || [])[index];
   });
+
   return {
     id: team.id,
     name: team.displayName,
@@ -232,7 +279,8 @@ async function storeGames(events) {
 }
 
 async function loadGames(leagueId) {
-  const url = ESPN + '/' + leagueId + '/scoreboard';
+  const url = scoreboardURL(leagueId);
+
   const data = await getJSON(
     'games:' + leagueId,
     url,
@@ -251,19 +299,11 @@ function validGameId(id) {
   return /^\d{5,15}$/.test(id || '');
 }
 
-function validLeague(league) {
-  return league === 'nba' || league === 'wnba';
-}
-
 function parseDate(date) {
   return Boolean(date) &&
     /^\d{4}-\d{2}-\d{2}$/.test(date) &&
     Number.isFinite(Date.parse(date)) &&
     new Date(date).toISOString().slice(0, 10) === date;
-}
-
-function summaryURL(league, id) {
-  return ESPN + '/' + league + '/summary?event=' + id;
 }
 
 const root = path.resolve(__dirname, 'public');
@@ -284,11 +324,12 @@ async function handler(req, res) {
 
     if (u.pathname === '/api/health') {
       await pool.query('SELECT 1');
+
       return send(res, 200, {
         ok: true,
         service: 'NBA Precision Pro',
         database: 'connected',
-        version: 'db-1'
+        version: 'ncaa-development-1'
       });
     }
 
@@ -303,6 +344,7 @@ async function handler(req, res) {
 
     if (u.pathname === '/api/games/all') {
       const active = leagues.filter(league => league.provider);
+
       const results = await Promise.allSettled(
         active.map(league => loadGames(league.id))
       );
@@ -450,6 +492,7 @@ async function handler(req, res) {
         totalScore: c.score,
         quarters: (c.linescores || []).map((q, index) => {
           const raw = q.value ?? q.displayValue ?? null;
+
           const value =
             raw === null || raw === ''
               ? null
@@ -473,6 +516,12 @@ async function handler(req, res) {
         });
       }
 
+      if (league === 'ncaam' || league === 'ncaaw') {
+        return send(res, 422, {
+          error: 'NCAA halftime prediction requires separate model calibration'
+        });
+      }
+
       if (teams.length !== 2) {
         return send(res, 422, {
           error: 'Two teams are required for halftime analysis'
@@ -491,7 +540,6 @@ async function handler(req, res) {
       });
     }
 
-    // Returns only previously saved halftime predictions.
     if (u.pathname === '/api/predictions') {
       const league =
         u.searchParams.get('league') || 'nba';
@@ -648,8 +696,7 @@ async function handler(req, res) {
         try {
           const data = await getJSON(
             'historical:' + league + ':' + espnDate,
-            ESPN + '/' + league +
-              '/scoreboard?dates=' + espnDate,
+            scoreboardURL(league, espnDate),
             60000
           );
 
@@ -717,8 +764,7 @@ async function handler(req, res) {
 
       const data = await getJSON(
         'historical:' + league + ':' + espnDate,
-        ESPN + '/' + league +
-          '/scoreboard?dates=' + espnDate,
+        scoreboardURL(league, espnDate),
         60000
       );
 
@@ -780,6 +826,12 @@ async function handler(req, res) {
       if (!validLeague(league)) {
         return send(res, 400, {
           error: 'Unsupported league'
+        });
+      }
+
+      if (league === 'ncaam' || league === 'ncaaw') {
+        return send(res, 422, {
+          error: 'NCAA backtesting requires separate period model calibration'
         });
       }
 
@@ -864,7 +916,7 @@ async function handler(req, res) {
                 points: Number.isFinite(points) ? points : null
               };
             })
-          }));
+          ));
 
           if (teams.length !== 2) {
             skipped.push(id);
@@ -1022,7 +1074,6 @@ async function collectGameAnalytics(event) {
 
     const url = summaryURL(leagueId, gameId);
 
-    // Fresh ESPN summary for halftime capture.
     const data = isHalftime
       ? await fetchESPN(url)
       : await getJSON(
@@ -1033,7 +1084,11 @@ async function collectGameAnalytics(event) {
 
     const observedAt = new Date().toISOString();
 
-    if (isHalftime) {
+    if (
+      isHalftime &&
+      leagueId !== 'ncaam' &&
+      leagueId !== 'ncaaw'
+    ) {
       try {
         const outcome = await halftimeCollector.capture({
           league: leagueId,
@@ -1099,7 +1154,7 @@ async function collectLiveGames() {
     let liveFound = false;
     let upcomingFound = false;
 
-    for (const leagueId of ['nba', 'wnba']) {
+    for (const leagueId of ['nba', 'wnba', 'ncaam', 'ncaaw']) {
       try {
         cache.delete('games:' + leagueId);
 
