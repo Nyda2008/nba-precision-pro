@@ -125,15 +125,38 @@ async function fetchESPN(url) {
   }
 }
 
+const MAX_CACHE_ENTRIES = 80;
+const MAX_CACHE_AGE_MS = 60000;
+
 async function getJSON(key, url, ttl = 15000) {
+  const now = Date.now();
   const old = cache.get(key);
 
-  if (old && Date.now() - old.time < ttl) {
+  if (old && now - old.time < ttl) {
     return old.data;
   }
 
   const data = await fetchESPN(url);
-  cache.set(key, { time: Date.now(), data });
+
+  cache.delete(key);
+  cache.set(key, {
+    time: Date.now(),
+    data
+  });
+
+  const cutoff = Date.now() - MAX_CACHE_AGE_MS;
+
+  for (const [entryKey, entry] of cache) {
+    if (entry.time < cutoff) {
+      cache.delete(entryKey);
+    }
+  }
+
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    cache.delete(oldestKey);
+  }
+
   return data;
 }
 
