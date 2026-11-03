@@ -4,7 +4,6 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-
 const { Pool } = require('pg');
 const { analyzeGame } = require('./stats-engine');
 const { createAnalyticsStore } = require('./analytics-store');
@@ -66,6 +65,10 @@ function validLeague(league) {
   return Object.prototype.hasOwnProperty.call(ESPN_SLUGS, league);
 }
 
+function isNCAA(league) {
+  return league === 'ncaam' || league === 'ncaaw';
+}
+
 function espnPath(league) {
   const slug = ESPN_SLUGS[league];
   if (!slug) throw new Error('ESPN not configured for ' + league);
@@ -74,10 +77,9 @@ function espnPath(league) {
 
 function scoreboardURL(league, date) {
   const params = new URLSearchParams();
-
   if (date) params.set('dates', date);
 
-  if (league === 'ncaam' || league === 'ncaaw') {
+  if (isNCAA(league)) {
     params.set('groups', '50');
     params.set('limit', '500');
   }
@@ -147,9 +149,7 @@ async function getJSON(key, url, ttl = 15000) {
   const cutoff = Date.now() - MAX_CACHE_AGE_MS;
 
   for (const [entryKey, entry] of cache) {
-    if (entry.time < cutoff) {
-      cache.delete(entryKey);
-    }
+    if (entry.time < cutoff) cache.delete(entryKey);
   }
 
   while (cache.size > MAX_CACHE_ENTRIES) {
@@ -302,11 +302,9 @@ async function storeGames(events) {
 }
 
 async function loadGames(leagueId) {
-  const url = scoreboardURL(leagueId);
-
   const data = await getJSON(
     'games:' + leagueId,
-    url,
+    scoreboardURL(leagueId),
     20000
   );
 
@@ -327,6 +325,29 @@ function parseDate(date) {
     /^\d{4}-\d{2}-\d{2}$/.test(date) &&
     Number.isFinite(Date.parse(date)) &&
     new Date(date).toISOString().slice(0, 10) === date;
+}
+
+function parsePeriodTeams(data) {
+  const competition = data.header?.competitions?.[0];
+
+  const teams = (competition?.competitors || []).map(c => ({
+    team: c.team?.displayName,
+    homeAway: c.homeAway,
+    totalScore: c.score,
+    quarters: (c.linescores || []).map((q, index) => {
+      const raw = q.value ?? q.displayValue ?? null;
+      const value = raw === null || raw === ''
+        ? null
+        : Number(raw);
+
+      return {
+        period: q.period || index + 1,
+        points: Number.isFinite(value) ? value : null
+      };
+    })
+  }));
+
+  return { competition, teams };
 }
 
 const root = path.resolve(__dirname, 'public');
@@ -352,7 +373,7 @@ async function handler(req, res) {
         ok: true,
         service: 'NBA Precision Pro',
         database: 'connected',
-        version: 'ncaa-development-1'
+        version: 'ncaa-development-2'
       });
     }
 
@@ -367,7 +388,6 @@ async function handler(req, res) {
 
     if (u.pathname === '/api/games/all') {
       const active = leagues.filter(league => league.provider);
-
       const results = await Promise.allSettled(
         active.map(league => loadGames(league.id))
       );
@@ -395,17 +415,11 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/games') {
-      const leagueId =
-        u.searchParams.get('league') || 'nba';
-
-      const league = leagues.find(
-        item => item.id === leagueId
-      );
+      const leagueId = u.searchParams.get('league') || 'nba';
+      const league = leagues.find(item => item.id === leagueId);
 
       if (!league) {
-        return send(res, 400, {
-          error: 'Unknown league'
-        });
+        return send(res, 400, { error: 'Unknown league' });
       }
 
       if (!league.provider) {
@@ -425,17 +439,11 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/game') {
-      const leagueId =
-        u.searchParams.get('league') || 'nba';
-
-      const league = leagues.find(
-        item => item.id === leagueId
-      );
+      const leagueId = u.searchParams.get('league') || 'nba';
+      const league = leagues.find(item => item.id === leagueId);
 
       if (!league) {
-        return send(res, 400, {
-          error: 'Unknown league'
-        });
+        return send(res, 400, { error: 'Unknown league' });
       }
 
       if (!league.provider) {
@@ -447,9 +455,7 @@ async function handler(req, res) {
       const id = u.searchParams.get('id');
 
       if (!validGameId(id)) {
-        return send(res, 400, {
-          error: 'Invalid game ID'
-        });
+        return send(res, 400, { error: 'Invalid game ID' });
       }
 
       const data = await getJSON(
@@ -481,21 +487,15 @@ async function handler(req, res) {
       u.pathname === '/api/game/quarters' ||
       u.pathname === '/api/game/halftime'
     ) {
-      const league =
-        u.searchParams.get('league') || 'nba';
-
+      const league = u.searchParams.get('league') || 'nba';
       const id = u.searchParams.get('id');
 
       if (!validLeague(league)) {
-        return send(res, 400, {
-          error: 'Unsupported league'
-        });
+        return send(res, 400, { error: 'Unsupported league' });
       }
 
       if (!validGameId(id)) {
-        return send(res, 400, {
-          error: 'Invalid game ID'
-        });
+        return send(res, 400, { error: 'Invalid game ID' });
       }
 
       const data = await getJSON(
@@ -504,44 +504,15 @@ async function handler(req, res) {
         12000
       );
 
-      const competition =
-        data.header?.competitions?.[0];
-
-      const teams = (
-        competition?.competitors || []
-      ).map(c => ({
-        team: c.team?.displayName,
-        homeAway: c.homeAway,
-        totalScore: c.score,
-        quarters: (c.linescores || []).map((q, index) => {
-          const raw = q.value ?? q.displayValue ?? null;
-
-          const value =
-            raw === null || raw === ''
-              ? null
-              : Number(raw);
-
-          return {
-            period: q.period || index + 1,
-            points: Number.isFinite(value) ? value : null
-          };
-        })
-      }));
+      const { competition, teams } = parsePeriodTeams(data);
 
       if (u.pathname === '/api/game/quarters') {
         return send(res, 200, {
           source: 'ESPN',
           league,
           gameId: id,
-          status:
-            competition?.status?.type?.description || null,
+          status: competition?.status?.type?.description || null,
           teams
-        });
-      }
-
-      if (league === 'ncaam' || league === 'ncaaw') {
-        return send(res, 422, {
-          error: 'NCAA halftime prediction requires separate model calibration'
         });
       }
 
@@ -551,34 +522,39 @@ async function handler(req, res) {
         });
       }
 
-      const analysis = analyzePeriods(teams);
+      // NCAA Men's basketball uses two halves.
+      // NCAA Women's basketball uses four quarters.
+      const analysis = analyzePeriods(teams, league);
+
+      // NCAA period analysis is enabled, but NCAA
+      // betting projections remain unavailable.
+      const ncaa = isNCAA(league);
 
       return send(res, 200, {
         source: 'ESPN',
         league,
         gameId: id,
-        status:
-          competition?.status?.type?.description || null,
-        ...analysis
+        status: competition?.status?.type?.description || null,
+        ...analysis,
+        ...(ncaa ? {
+          halftimeProjection: null,
+          predictionStatus: 'calibration_required',
+          predictionNote:
+            'NCAA period analysis only; no validated halftime prediction.'
+        } : {})
       });
     }
 
     if (u.pathname === '/api/predictions') {
-      const league =
-        u.searchParams.get('league') || 'nba';
-
+      const league = u.searchParams.get('league') || 'nba';
       const id = u.searchParams.get('id');
 
       if (!validLeague(league)) {
-        return send(res, 400, {
-          error: 'Unsupported league'
-        });
+        return send(res, 400, { error: 'Unsupported league' });
       }
 
       if (!validGameId(id)) {
-        return send(res, 400, {
-          error: 'Invalid game ID'
-        });
+        return send(res, 400, { error: 'Invalid game ID' });
       }
 
       const records =
@@ -594,17 +570,11 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/analyze') {
-      const leagueId =
-        u.searchParams.get('league') || 'nba';
-
-      const league = leagues.find(
-        item => item.id === leagueId
-      );
+      const leagueId = u.searchParams.get('league') || 'nba';
+      const league = leagues.find(item => item.id === leagueId);
 
       if (!league) {
-        return send(res, 400, {
-          error: 'Unknown league'
-        });
+        return send(res, 400, { error: 'Unknown league' });
       }
 
       if (!league.provider) {
@@ -616,9 +586,7 @@ async function handler(req, res) {
       const id = u.searchParams.get('id');
 
       if (!validGameId(id)) {
-        return send(res, 400, {
-          error: 'Invalid game ID'
-        });
+        return send(res, 400, { error: 'Invalid game ID' });
       }
 
       const data = await getJSON(
@@ -628,7 +596,6 @@ async function handler(req, res) {
       );
 
       const teams = (data.boxscore?.players || []).map(parseTotals);
-
       const analysis = analyzeGame({
         league: league.id,
         teams
@@ -647,21 +614,15 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/analytics/history') {
-      const league =
-        u.searchParams.get('league') || 'nba';
-
+      const league = u.searchParams.get('league') || 'nba';
       const id = u.searchParams.get('id');
 
       if (!validLeague(league)) {
-        return send(res, 400, {
-          error: 'Unsupported league'
-        });
+        return send(res, 400, { error: 'Unsupported league' });
       }
 
       if (!validGameId(id)) {
-        return send(res, 400, {
-          error: 'Invalid game ID'
-        });
+        return send(res, 400, { error: 'Invalid game ID' });
       }
 
       const history =
@@ -676,18 +637,12 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/games/import-range') {
-      const league =
-        u.searchParams.get('league') || 'nba';
-
+      const league = u.searchParams.get('league') || 'nba';
       const startDate = u.searchParams.get('start');
-      const days = Number(
-        u.searchParams.get('days') || 1
-      );
+      const days = Number(u.searchParams.get('days') || 1);
 
       if (!validLeague(league)) {
-        return send(res, 400, {
-          error: 'Unsupported league'
-        });
+        return send(res, 400, { error: 'Unsupported league' });
       }
 
       if (!parseDate(startDate)) {
@@ -696,11 +651,7 @@ async function handler(req, res) {
         });
       }
 
-      if (
-        !Number.isInteger(days) ||
-        days < 1 ||
-        days > 3
-      ) {
+      if (!Number.isInteger(days) || days < 1 || days > 3) {
         return send(res, 400, {
           error: 'Days must be between 1 and 3'
         });
@@ -732,7 +683,6 @@ async function handler(req, res) {
           );
 
           await storeGames(completed);
-
           totalImported += completed.length;
 
           batches.push({
@@ -766,15 +716,11 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/games/import-date') {
-      const league =
-        u.searchParams.get('league') || 'nba';
-
+      const league = u.searchParams.get('league') || 'nba';
       const date = u.searchParams.get('date');
 
       if (!validLeague(league)) {
-        return send(res, 400, {
-          error: 'Unsupported league'
-        });
+        return send(res, 400, { error: 'Unsupported league' });
       }
 
       if (!parseDate(date)) {
@@ -807,13 +753,10 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/games/history') {
-      const league =
-        u.searchParams.get('league') || 'nba';
+      const league = u.searchParams.get('league') || 'nba';
 
       if (!validLeague(league)) {
-        return send(res, 400, {
-          error: 'Unsupported league'
-        });
+        return send(res, 400, { error: 'Unsupported league' });
       }
 
       const date = u.searchParams.get('date');
@@ -843,18 +786,18 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/backtest') {
-      const league =
-        u.searchParams.get('league') || 'nba';
+      const league = u.searchParams.get('league') || 'nba';
 
       if (!validLeague(league)) {
-        return send(res, 400, {
-          error: 'Unsupported league'
-        });
+        return send(res, 400, { error: 'Unsupported league' });
       }
 
-      if (league === 'ncaam' || league === 'ncaaw') {
+      // NCAA backtesting is restricted until separate
+      // league-specific validation is completed.
+      if (isNCAA(league)) {
         return send(res, 422, {
-          error: 'NCAA backtesting requires separate period model calibration'
+          error:
+            'NCAA backtesting requires separate period model calibration'
         });
       }
 
@@ -919,34 +862,14 @@ async function handler(req, res) {
             continue;
           }
 
-          const teams = (
-            competition.competitors || []
-          ).map(c => ({
-            team: c.team?.displayName,
-            homeAway: c.homeAway,
-            totalScore: c.score,
-            quarters: (c.linescores || []).map((q, index) => {
-              const raw =
-                q.value ?? q.displayValue ?? null;
-
-              const points =
-                raw === null || raw === ''
-                  ? null
-                  : Number(raw);
-
-              return {
-                period: q.period || index + 1,
-                points: Number.isFinite(points) ? points : null
-              };
-            })
-          }));
+          const { teams } = parsePeriodTeams(data);
 
           if (teams.length !== 2) {
             skipped.push(id);
             continue;
           }
 
-          const analysis = analyzePeriods(teams);
+          const analysis = analyzePeriods(teams, league);
 
           if (
             analysis.firstHalf.combinedPoints === null ||
@@ -976,7 +899,6 @@ async function handler(req, res) {
       }
 
       const report = backtestGames(games);
-
       await backtestStore.saveReport(league, report);
 
       return send(res, 200, {
@@ -989,13 +911,10 @@ async function handler(req, res) {
     }
 
     if (u.pathname === '/api/backtest/summary') {
-      const league =
-        u.searchParams.get('league') || 'nba';
+      const league = u.searchParams.get('league') || 'nba';
 
       if (!validLeague(league)) {
-        return send(res, 400, {
-          error: 'Unsupported league'
-        });
+        return send(res, 400, { error: 'Unsupported league' });
       }
 
       const result = await pool.query(`
@@ -1050,9 +969,7 @@ async function handler(req, res) {
     const full = path.resolve(root, relative);
 
     if (!full.startsWith(root + path.sep)) {
-      return send(res, 403, {
-        error: 'Forbidden'
-      });
+      return send(res, 403, { error: 'Forbidden' });
     }
 
     fs.readFile(full, (error, body) => {
@@ -1092,12 +1009,12 @@ async function collectGameAnalytics(event) {
   if (!validGameId(gameId)) return;
 
   try {
-    const isHalftime =
+    const halftime =
       (event.status || '').trim().toLowerCase() === 'halftime';
 
     const url = summaryURL(leagueId, gameId);
 
-    const data = isHalftime
+    const data = halftime
       ? await fetchESPN(url)
       : await getJSON(
           'game:' + leagueId + ':' + gameId,
@@ -1107,11 +1024,10 @@ async function collectGameAnalytics(event) {
 
     const observedAt = new Date().toISOString();
 
-    if (
-      isHalftime &&
-      leagueId !== 'ncaam' &&
-      leagueId !== 'ncaaw'
-    ) {
+    // Preserve existing NBA and WNBA
+    // halftime prediction collection.
+    // NCAA requires separate calibration.
+    if (halftime && !isNCAA(leagueId)) {
       try {
         const outcome = await halftimeCollector.capture({
           league: leagueId,
@@ -1138,7 +1054,6 @@ async function collectGameAnalytics(event) {
     }
 
     const teams = (data.boxscore?.players || []).map(parseTotals);
-
     if (!teams.length) return;
 
     const analysis = analyzeGame({
@@ -1184,8 +1099,7 @@ async function collectLiveGames() {
         const events = await loadGames(leagueId);
 
         for (const event of events) {
-          const status =
-            (event.status || '').toLowerCase();
+          const status = (event.status || '').toLowerCase();
 
           if (
             status.includes('progress') ||
@@ -1243,9 +1157,7 @@ function startCollector() {
 }
 
 if (!process.env.DATABASE_URL) {
-  console.error(
-    'Missing DATABASE_URL environment variable'
-  );
+  console.error('Missing DATABASE_URL environment variable');
   process.exit(1);
 }
 
