@@ -522,12 +522,7 @@ async function handler(req, res) {
         });
       }
 
-      // NCAA Men's basketball uses two halves.
-      // NCAA Women's basketball uses four quarters.
       const analysis = analyzePeriods(teams, league);
-
-      // NCAA period analysis is enabled, but NCAA
-      // betting projections remain unavailable.
       const ncaa = isNCAA(league);
 
       return send(res, 200, {
@@ -792,14 +787,9 @@ async function handler(req, res) {
         return send(res, 400, { error: 'Unsupported league' });
       }
 
-      // NCAA backtesting is restricted until separate
-      // league-specific validation is completed.
-      if (isNCAA(league)) {
-        return send(res, 422, {
-          error:
-            'NCAA backtesting requires separate period model calibration'
-        });
-      }
+      // NCAA baseline backtesting is enabled.
+      // The halftime predictions exposed by the live
+      // API remain disabled pending separate calibration.
 
       const requestedLimit = Number(
         u.searchParams.get('limit') || 10
@@ -874,6 +864,30 @@ async function handler(req, res) {
           if (
             analysis.firstHalf.combinedPoints === null ||
             analysis.secondHalf.combinedPoints === null
+          ) {
+            skipped.push(id);
+            continue;
+          }
+
+          // Exclude games whose regulation period
+          // totals do not reconcile with the final
+          // score. This also excludes overtime games.
+          const regulationTotal =
+            analysis.firstHalf.combinedPoints +
+            analysis.secondHalf.combinedPoints;
+
+          const finalScores = teams.map(team =>
+            team.totalScore === null ||
+            team.totalScore === undefined ||
+            team.totalScore === ''
+              ? NaN
+              : Number(team.totalScore)
+          );
+
+          if (
+            finalScores.some(score => !Number.isFinite(score)) ||
+            finalScores.reduce((sum, score) => sum + score, 0) !==
+              regulationTotal
           ) {
             skipped.push(id);
             continue;
@@ -1024,9 +1038,6 @@ async function collectGameAnalytics(event) {
 
     const observedAt = new Date().toISOString();
 
-    // Preserve existing NBA and WNBA
-    // halftime prediction collection.
-    // NCAA requires separate calibration.
     if (halftime && !isNCAA(leagueId)) {
       try {
         const outcome = await halftimeCollector.capture({
