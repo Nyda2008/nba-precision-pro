@@ -1,16 +1,33 @@
 
 'use strict';
 
-// Basketball Precision Pro
-// NCAA Travel Research — Version 1
-// Read-only. Does not modify projections or betting decisions.
+// Basketball Precision Pro — NCAA Travel Research v2
+// Read-only. Does not modify scoring projections or betting rules.
 
-const ESPN =
-  'https://site.api.espn.com/apis/site/v2/sports/basketball';
+const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball';
+const GEO = 'https://geocoding-api.open-meteo.com/v1/search';
 
 const SLUGS = {
   ncaam: 'mens-college-basketball',
   ncaaw: 'womens-college-basketball'
+};
+
+const STATE_NAMES = {
+  AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas',
+  CA: 'California', CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware',
+  FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho',
+  IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas',
+  KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland',
+  MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota',
+  MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska',
+  NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey',
+  NM: 'New Mexico', NY: 'New York', NC: 'North Carolina',
+  ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon',
+  PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina',
+  SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah',
+  VT: 'Vermont', VA: 'Virginia', WA: 'Washington',
+  WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming',
+  DC: 'District of Columbia'
 };
 
 const locationCache = new Map();
@@ -21,8 +38,8 @@ async function getJSON(url) {
 
   try {
     const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { Accept: 'application/json' }
+      headers: { Accept: 'application/json' },
+      signal: controller.signal
     });
 
     if (!response.ok) {
@@ -35,6 +52,16 @@ async function getJSON(url) {
   }
 }
 
+function normalize(value) {
+  return String(value || '').trim().toLowerCase()
+    .replace(/\./g, '').replace(/\s+/g, ' ');
+}
+
+function fullState(value) {
+  const key = String(value || '').trim().toUpperCase();
+  return STATE_NAMES[key] || String(value || '').trim();
+}
+
 function dateOnly(value) {
   const time = Date.parse(value);
   return Number.isFinite(time)
@@ -44,7 +71,6 @@ function dateOnly(value) {
 
 function daysBetween(later, earlier) {
   if (!later || !earlier) return null;
-
   return Math.round((
     Date.parse(later + 'T00:00:00Z') -
     Date.parse(earlier + 'T00:00:00Z')
@@ -53,89 +79,61 @@ function daysBetween(later, earlier) {
 
 function locationFromVenue(venue) {
   const address = venue?.address || {};
-  const city = address.city || null;
-  const state = address.state || null;
-
   return {
     venueName: venue?.fullName || venue?.name || null,
-    city,
-    state,
+    city: address.city || null,
+    state: address.state || null,
     country: address.country || 'USA'
   };
 }
 
-function sameLocation(a, b) {
-  if (!a?.city || !b?.city) return false;
+function validUSPlace(place) {
+  if (!place?.city || !place?.state) return false;
+  const country = normalize(place.country || 'USA');
+  return ['usa', 'us', 'united states', 'united states of america']
+    .includes(country);
+}
 
-  return (
-    String(a.city).toLowerCase() ===
-      String(b.city).toLowerCase() &&
-    String(a.state || '').toLowerCase() ===
-      String(b.state || '').toLowerCase()
-  );
+function sameLocation(a, b) {
+  return validUSPlace(a) && validUSPlace(b) &&
+    normalize(a.city) === normalize(b.city) &&
+    normalize(fullState(a.state)) === normalize(fullState(b.state));
 }
 
 async function coordinates(place, request = getJSON) {
-  if (!place?.city || !place?.state) return null;
+  if (!validUSPlace(place)) return null;
 
-  const country = String(place.country || 'USA')
-    .toUpperCase();
+  const state = fullState(place.state);
+  const key = normalize(place.city) + '|' + normalize(state);
+  if (locationCache.has(key)) return locationCache.get(key);
 
-  if (!['USA', 'US', 'UNITED STATES'].includes(country)) {
-    return null;
-  }
-
-  const key = [
-    place.city.toLowerCase(),
-    place.state.toLowerCase()
-  ].join('|');
-
-  if (locationCache.has(key)) {
-    return locationCache.get(key);
-  }
-
-  const name = place.city + ', ' + place.state;
-
-  const url =
-    'https://geocoding-api.open-meteo.com/v1/search?' +
-    new URLSearchParams({
-      name,
-      count: '10',
-      countryCode: 'US',
-      language: 'en',
-      format: 'json'
-    }).toString();
+  // Search by city; independently verify the state.
+  const url = GEO + '?' + new URLSearchParams({
+    name: String(place.city).trim(),
+    count: '100',
+    countryCode: 'US',
+    language: 'en',
+    format: 'json'
+  }).toString();
 
   try {
     const data = await request(url);
+    const match = (data.results || []).find(item =>
+      normalize(item.name) === normalize(place.city) &&
+      normalize(item.admin1) === normalize(state) &&
+      (item.country_code === undefined || item.country_code === 'US')
+    );
 
-    const results = data.results || [];
-
-    const normalized = value =>
-      String(value || '').trim().toLowerCase();
-
-    const match = results.find(item => {
-      const cityMatches =
-        normalized(item.name) === normalized(place.city);
-
-      const stateMatches =
-        normalized(item.admin1) === normalized(place.state) ||
-        normalized(item.admin1_code) === normalized(place.state);
-
-      return cityMatches && stateMatches;
-    });
-
-    // Do not accept a location in the wrong state.
-    // Some state abbreviations require explicit verification.
     if (!match) return null;
 
     const latitude = Number(match.latitude);
     const longitude = Number(match.longitude);
 
-    if (!Number.isFinite(latitude) ||
-        !Number.isFinite(longitude)) return null;
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return null;
+    }
 
-    const value = {
+    const found = {
       latitude,
       longitude,
       timezone: match.timezone || null,
@@ -143,8 +141,8 @@ async function coordinates(place, request = getJSON) {
       resolvedState: match.admin1
     };
 
-    locationCache.set(key, value);
-    return value;
+    locationCache.set(key, found);
+    return found;
   } catch {
     return null;
   }
@@ -157,23 +155,19 @@ function greatCircleMiles(a, b) {
   const dLat = rad(b.latitude - a.latitude);
   const dLon = rad(b.longitude - a.longitude);
 
-  const value =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(rad(a.latitude)) *
-    Math.cos(rad(b.latitude)) *
+  const value = Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) *
     Math.sin(dLon / 2) ** 2;
 
-  const angle = 2 * Math.atan2(
-    Math.sqrt(Math.min(1, value)),
-    Math.sqrt(Math.max(0, 1 - value))
-  );
+  const bounded = Math.max(0, Math.min(1, value));
 
-  return Math.round(3958.7613 * angle);
+  return Math.round(
+    3958.7613 * 2 * Math.asin(Math.sqrt(bounded))
+  );
 }
 
-async function distanceBetweenPlaces(a, b, request) {
-  if (!a?.city || !b?.city) return null;
-
+async function distanceBetweenPlaces(a, b, request = getJSON) {
+  if (!validUSPlace(a) || !validUSPlace(b)) return null;
   if (sameLocation(a, b)) return 0;
 
   const [start, end] = await Promise.all([
@@ -190,7 +184,6 @@ function parseEvent(event) {
   return {
     id: String(event.id || ''),
     date: dateOnly(event.date),
-    status: event.status?.type?.name || null,
     completed: event.status?.type?.completed === true ||
       event.status?.type?.name === 'STATUS_FINAL',
     location: locationFromVenue(competition.venue),
@@ -256,6 +249,7 @@ async function analyzeTravel(options = {}) {
 
   const previousGames = [];
   const unavailableDates = [];
+  const seenGames = new Set();
 
   for (let daysAgo = 1; daysAgo <= 7; daysAgo++) {
     const date = new Date(
@@ -270,15 +264,21 @@ async function analyzeTravel(options = {}) {
         '&groups=50&limit=500'
       );
 
-      previousGames.push(
-        ...(data.events || [])
-          .map(parseEvent)
-          .filter(event =>
-            event.completed &&
-            event.date &&
-            event.date < gameDate
-          )
-      );
+      for (const event of data.events || []) {
+        const parsed = parseEvent(event);
+
+        if (
+          !parsed.completed ||
+          !parsed.date ||
+          parsed.date >= gameDate ||
+          seenGames.has(parsed.id)
+        ) {
+          continue;
+        }
+
+        seenGames.add(parsed.id);
+        previousGames.push(parsed);
+      }
     } catch (error) {
       unavailableDates.push({
         date,
@@ -291,8 +291,12 @@ async function analyzeTravel(options = {}) {
 
   for (const team of teams) {
     const history = previousGames
-      .filter(event => teamParticipation(event, team.id))
-      .sort((a, b) => b.date.localeCompare(a.date));
+      .filter(event =>
+        teamParticipation(event, team.id)
+      )
+      .sort((a, b) =>
+        b.date.localeCompare(a.date)
+      );
 
     const previous = history[0] || null;
 
@@ -302,12 +306,12 @@ async function analyzeTravel(options = {}) {
 
     const travelMiles = previous
       ? await distanceBetweenPlaces(
-          previous.location, currentLocation, request
+          previous.location,
+          currentLocation,
+          request
         )
       : null;
 
-    // Construct the sequence in chronological order.
-    // Include the current game as the final location.
     const route = [...history].reverse().map(event => ({
       gameId: event.id,
       date: event.date,
@@ -339,12 +343,9 @@ async function analyzeTravel(options = {}) {
       }
     }
 
-    const roadGames = history.filter(event => {
-      const participation = teamParticipation(
-        event, team.id
-      );
-      return participation?.homeAway === 'away';
-    }).length;
+    const roadGames = history.filter(event =>
+      teamParticipation(event, team.id)?.homeAway === 'away'
+    ).length;
 
     results.push({
       teamId: team.id,
@@ -371,16 +372,18 @@ async function analyzeTravel(options = {}) {
         knownRouteLegs: knownLegs,
         unknownRouteLegs: unknownLegs,
         routeDistanceComplete:
-          unknownLegs === 0 && route.length > 1,
+          unknownLegs === 0 &&
+          route.length > 1 &&
+          unavailableDates.length === 0,
         awayGamesInPriorSevenDays: roadGames,
         gamesInPriorSevenDays: history.length,
-        measurement: 'Estimated straight-line miles'
+        measurement: 'Estimated straight-line city-to-city miles'
       }
     });
   }
 
   return {
-    module: 'travel-research-v1',
+    module: 'travel-research-v2',
     league,
     gameId: String(gameId),
     gameDate,
@@ -392,13 +395,12 @@ async function analyzeTravel(options = {}) {
       datesUnavailable: unavailableDates
     },
     notes: [
-      'Venue-to-venue estimates are not actual team routes.',
-      'Location coordinates represent cities, not arenas.',
-      'A missing venue or failed geocode produces null.',
-      'Unknown route legs are excluded from known miles.',
-      'Seven-day history may omit earlier games.',
-      'No player fatigue or betting edge is inferred.',
-      'Existing analyzer and OVER filter are unchanged.'
+      'Distances are approximate city-center straight-line miles, not actual travel.',
+      'States are matched against full state names to avoid wrong-city results.',
+      'Unknown distances remain null; known route miles may be incomplete.',
+      'Historical games are limited to seven preceding UTC calendar dates.',
+      'Travel fatigue has not been established as a betting advantage.',
+      'No scoring model or halftime OVER rule is changed.'
     ]
   };
 }
