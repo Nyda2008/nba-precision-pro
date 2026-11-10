@@ -13,6 +13,8 @@ const { createBacktestStore } = require('./backtest-store');
 const { createPredictionStore } = require('./prediction-store');
 const { createHalftimeCollector } = require('./halftime-collector');
 const { createHistoricalBacktestRunner } = require('./historical-backtest-runner');
+const { analyzeFatigue } = require('./fatigue-research');
+const { analyzeTravel } = require('./travel-research');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball';
@@ -489,6 +491,57 @@ async function handler(req, res) {
         league: league.id,
         retrievedAt: new Date().toISOString(),
         events
+      });
+    }
+
+    // NCAA RESEARCH ENDPOINT — READ ONLY
+    // Returns fatigue and travel results independently.
+
+    if (u.pathname === '/api/research/halftime') {
+      const league =
+        u.searchParams.get('league') || 'ncaam';
+
+      const id = u.searchParams.get('id');
+
+      if (!isNCAA(league)) {
+        return send(res, 400, {
+          error: 'Research supports ncaam and ncaaw only'
+        });
+      }
+
+      if (!validGameId(id)) {
+        return send(res, 400, {
+          error: 'Invalid game ID'
+        });
+      }
+
+      const jobs = await Promise.allSettled([
+        analyzeFatigue({ league, gameId: id }),
+        analyzeTravel({ league, gameId: id })
+      ]);
+
+      const result = job =>
+        job.status === 'fulfilled'
+          ? {
+              status: 'ok',
+              data: job.value
+            }
+          : {
+              status: 'unavailable',
+              error:
+                job.reason?.message ||
+                'Provider unavailable'
+            };
+
+      return send(res, 200, {
+        league,
+        gameId: id,
+        readOnly: true,
+        retrievedAt: new Date().toISOString(),
+        fatigue: result(jobs[0]),
+        travel: result(jobs[1]),
+        note:
+          'Research only. Projections and selection rules are unchanged.'
       });
     }
 
