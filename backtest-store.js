@@ -2,8 +2,9 @@
 'use strict';
 
 // Basketball Precision Pro — Backtest storage and historical research
-// v1 persistence remains unchanged. v2 is research-only, walk-forward.
+// v1 persistence unchanged. v2 and v3 are research-only and walk-forward.
 // No sportsbook prices, wagers, or automatic prediction changes.
+// v3 rules were chosen after inspecting v2 results: exploratory, not independent.
 
 const MODEL_VERSION = 'first-half-baseline-v1';
 const LOCAL_TIMEZONE = 'America/Chicago';
@@ -147,14 +148,26 @@ function walkForwardRegression(games) {
       ));
       const baselineForecast = game.predictedTotal;
       const v2Forecast = baselineForecast + correction;
+
+      // Research candidate:
+      // full adjustment for <=70; half for 71-80; none >=81.
+      // This rule was chosen after reviewing the same dataset.
+      // Historical v3 scores are NOT independent validation.
+      const v3Weight = game.firstHalfTotal <= 70 ? 1
+        : game.firstHalfTotal <= 80 ? 0.5 : 0;
+      const v3Forecast = baselineForecast + correction * v3Weight;
+
       const v1Error = baselineForecast - game.actualTotal;
       const v2Error = v2Forecast - game.actualTotal;
+      const v3Error = v3Forecast - game.actualTotal;
       const row = {
         gameId: game.gameId,
         day,
         range,
         v1Error,
         v2Error,
+        v3Error,
+        v3Weight,
         error: v2Error,
         correction,
         trainingRangeGames: stats.count
@@ -186,11 +199,19 @@ function walkForwardRegression(games) {
 
   const v1 = modelSummary(paired, 'v1Error');
   const v2 = modelSummary(paired, 'v2Error');
+  const v3 = modelSummary(paired, 'v3Error');
+
   const improvement = paired.filter(row =>
     Math.abs(row.v2Error) < Math.abs(row.v1Error)
   ).length;
   const worse = paired.filter(row =>
     Math.abs(row.v2Error) > Math.abs(row.v1Error)
+  ).length;
+  const v3BetterThanV2 = paired.filter(row =>
+    Math.abs(row.v3Error) < Math.abs(row.v2Error) - 1e-9
+  ).length;
+  const v3WorseThanV2 = paired.filter(row =>
+    Math.abs(row.v3Error) > Math.abs(row.v2Error) + 1e-9
   ).length;
 
   return {
@@ -211,6 +232,18 @@ function walkForwardRegression(games) {
     },
     v1OnSameGames: v1,
     v2OnSameGames: v2,
+    v3OnSameGames: v3,
+    selectiveV3: {
+      name: 'selective-regression-v3-candidate',
+      status: 'retrospective_exploratory_not_independent_validation',
+      rules: [
+        { firstHalf: '70 or fewer', v2AdjustmentWeight: 1 },
+        { firstHalf: '71-80', v2AdjustmentWeight: 0.5 },
+        { firstHalf: '81 or more', v2AdjustmentWeight: 0 }
+      ],
+      note: 'Rules chosen using segment results from this same dataset. ' +
+        'Keep fixed and validate on games not included in this report.'
+    },
     comparison: {
       maeImprovementPoints: v1.mae === null ? null :
         round(v1.mae - v2.mae),
@@ -218,7 +251,14 @@ function walkForwardRegression(games) {
         round(v1.rmse - v2.rmse),
       v2BetterAbsoluteErrorGames: improvement,
       v2WorseAbsoluteErrorGames: worse,
-      tiedAbsoluteErrorGames: paired.length - improvement - worse
+      tiedAbsoluteErrorGames: paired.length - improvement - worse,
+      v3VersusV2MaeChangePoints: v3.mae === null ? null :
+        round(v2.mae - v3.mae),
+      v3VersusV1MaeChangePoints: v3.mae === null ? null :
+        round(v1.mae - v3.mae),
+      v3BetterThanV2Games: v3BetterThanV2,
+      v3WorseThanV2Games: v3WorseThanV2,
+      v3TiedWithV2Games: paired.length - v3BetterThanV2 - v3WorseThanV2
     },
     byFirstHalfRange: FIRST_HALF_RANGES.map(range => {
       const rows = byRange.get(range);
@@ -226,7 +266,8 @@ function walkForwardRegression(games) {
         range,
         tested: rows.length,
         v1: modelSummary(rows, 'v1Error'),
-        v2: modelSummary(rows, 'v2Error')
+        v2: modelSummary(rows, 'v2Error'),
+        v3: modelSummary(rows, 'v3Error')
       };
     }),
     days: daily,
@@ -235,7 +276,10 @@ function walkForwardRegression(games) {
       'Same-date observations are never training data for one another.',
       'Earlier start date does not guarantee an earlier completion; validate timing before any live use.',
       'No sportsbook halftime lines or prices are present.',
-      'This is a first research backtest, not a validated profitable wagering system.'
+      'v3 scoring weights were selected after seeing v2 results on these same games.',
+      'v3 historical comparison is exploratory; it is not independent validation.',
+      'Do not choose v3 over v2 without a new prospective evaluation period.',
+      'This research is not a validated profitable wagering system.'
     ]
   };
 }
